@@ -119,6 +119,16 @@
             <input type="text" id="customFileName" class="text-input" placeholder=" ">
         </div>
 
+        <div class="form-group" style="margin-top: 15px; background: #fff3e0; padding: 12px; border-radius: 8px; border: 1px solid #f39c12;">
+            <label style="color: #d35400;">3. 分享連結保留時間 (自動刪除)</label>
+            <select id="expireTimeSelect" class="text-input" style="background: white; cursor: pointer; border-color: #f39c12;">
+                <option value="1h">1 小時後自動銷毀</option>
+                <option value="12h">12 小時後自動銷毀</option>
+                <option value="24h" selected>24 小時後自動銷毀</option>
+                <option value="72h">3 天 (72小時) 後自動銷毀</option>
+            </select>
+        </div>
+
         <button class="btn" onclick="processData()">⚙️ 執行生成包絡路線</button>
         
         <div id="actionButtons" style="display: none; margin-top: 15px;">
@@ -134,7 +144,7 @@
             <label style="color: #2980b9;">下載連結：</label>
             <textarea id="shareUrlInput" readonly style="width: 100%; height: 200px; padding: 8px; margin-bottom: 8px; border: 1px solid #bdc3c7; border-radius: 6px; font-size: 13px;"></textarea>
             <button class="btn btn-success" onclick="copyShareLink()" style="margin-bottom: 0; padding: 10px;">📋 一鍵複製</button>
-            <div style="margin-top: 5px; font-size: 12px; color: #7f8c8d;">* 提示：檔案於雲端伺服器保留 60 分鐘。</div>
+            <div id="shareHint" style="margin-top: 5px; font-size: 12px; color: #e74c3c; font-weight: bold;"></div>
         </div>
 
         <div class="legend">
@@ -162,9 +172,6 @@
     let originalPoints = [];
     let generatedPoints = [];
 
-    // =========================================================
-    // 清除功能
-    // =========================================================
     function clearInput() {
         document.getElementById('fileInput').value = "";
         document.getElementById('coordInput').value = "";
@@ -181,9 +188,6 @@
         alert("🧹 座標與上傳檔案已全部清除！請貼上新的座標。");
     }
 
-    // =========================================================
-    // 數學邏輯與地圖功能
-    // =========================================================
     function toggleDensifySettings() {
         const isChecked = document.getElementById('densifyCheck').checked;
         document.getElementById('stepSettings').style.display = isChecked ? 'flex' : 'none';
@@ -212,6 +216,182 @@
         const R = 6378137; const lat1 = lat * Math.PI / 180; const lon1 = lon * Math.PI / 180; const brng = bearing * Math.PI / 180;
         const lat2 = Math.asin(Math.sin(lat1) * Math.cos(distance / R) + Math.cos(lat1) * Math.sin(distance / R) * Math.cos(brng));
         const lon2 = lon1 + Math.atan2(Math.sin(brng) * Math.sin(distance / R) * Math.cos(lat1), Math.cos(distance / R) - Math.sin(lat1) * Math.sin(lat2));
+        return { lat: lat2 * 180 / Math.PI, lon: lon2 * 180 / Math.PI };
+    }
+
+    function getDistance(lat1, lon1, lat2, lon2) {
+        const R = 6378137; const dLat = (lat2 - lat1) * Math.PI / 180; const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    function getSegmentDistance(latA, lonA, latB, lonB, latC, lonC) {
+        const R = 6378137; const latMid = (latA + latB) / 2 * Math.PI / 180;
+        const dxB = (lonB - lonA) * Math.PI / 180 * Math.cos(latMid) * R; const dyB = (latB - latA) * Math.PI / 180 * R;
+        const dxC = (lonC - lonA) * Math.PI / 180 * Math.cos(latMid) * R; const dyC = (latC - latA) * Math.PI / 180 * R;
+        const l2 = dxB * dxB + dyB * dyB; if (l2 === 0) return getDistance(latA, lonA, latC, lonC); 
+        let t = Math.max(0, Math.min(1, (dxC * dxB + dyC * dyB) / l2)); 
+        return Math.hypot(dxC - t * dxB, dyC - t * dyB);
+    }
+
+    async function processData() {
+        originalPoints = []; 
+        const fileInput = document.getElementById('fileInput');
+        const coordInput = document.getElementById('coordInput').value.trim();
+
+        if (fileInput.files.length > 0) {
+            const text = await fileInput.files[0].text(); parseGPX(text);
+        } else if (coordInput !== "") {
+            parseTextCoords(coordInput);
+        } else { return alert("請上傳 GPX 檔案或貼上座標！"); }
+
+        if (originalPoints.length === 0) return alert("無法解析座標，請檢查檔案內容！");
+
+        generateSmartPoints(); drawMap();
+        document.getElementById('actionButtons').style.display = 'block';
+        alert("✅ 軌跡生成成功！");
+    }
+
+    function parseGPX(xmlText) {
+        const xmlDoc = new DOMParser().parseFromString(xmlText, "text/xml");
+        for (let type of ['trkpt', 'rtept', 'wpt']) {
+            const nodes = xmlDoc.getElementsByTagName(type);
+            if (nodes.length > 0) {
+                for (let i = 0; i < nodes.length; i++) {
+                    const lat = parseFloat(nodes[i].getAttribute('lat')), lon = parseFloat(nodes[i].getAttribute('lon'));
+                    if (!isNaN(lat) && !isNaN(lon)) originalPoints.push({ lat, lon });
+                } break;
+            }
+        }
+    }
+
+    function parseTextCoords(text) {
+        text.split('\n').forEach(line => {
+            const parts = line.split(/[,\s\t]+/).filter(Boolean);
+            if (parts.length >= 2) {
+                const lat = parseFloat(parts[0]), lon = parseFloat(parts[1]);
+                if (!isNaN(lat) && !isNaN(lon)) originalPoints.push({ lat, lon });
+            }
+        });
+    }
+
+    function densifyRoute(points, minStep, maxStep) {
+        if (points.length < 2) return points;
+        const densePoints = [points[0]];
+        for (let i = 0; i < points.length - 1; i++) {
+            const p1 = points[i], p2 = points[i + 1];
+            const totalDist = getDistance(p1.lat, p1.lon, p2.lat, p2.lon);
+            if (totalDist > maxStep) {
+                const bearing = getBearing(p1.lat, p1.lon, p2.lat, p2.lon);
+                let currentDist = Math.random() * (maxStep - minStep) + minStep;
+                while (currentDist < totalDist) {
+                    densePoints.push(getDestination(p1.lat, p1.lon, currentDist, bearing));
+                    currentDist += Math.random() * (maxStep - minStep) + minStep;
+                }
+            } densePoints.push(p2);
+        } return densePoints;
+    }
+
+    function generateSmartPoints() {
+        generatedPoints = []; const n = originalPoints.length; if (n === 0) return;
+        const clusters = [], visited = new Set(), pointCentroids = new Array(n);
+        for (let i = 0; i < n; i++) {
+            if (visited.has(i)) continue;
+            const cluster = [], queue = [i]; visited.add(i);
+            while (queue.length > 0) {
+                const curr = queue.shift(); cluster.push(curr);
+                for (let j = 0; j < n; j++) {
+                    if (!visited.has(j) && getDistance(originalPoints[curr].lat, originalPoints[curr].lon, originalPoints[j].lat, originalPoints[j].lon) <= 90) {
+                        visited.add(j); queue.push(j);
+                    }
+                }
+            } clusters.push(cluster);
+        }
+        clusters.forEach(cluster => {
+            let sumLat = 0, sumLon = 0; cluster.forEach(idx => { sumLat += originalPoints[idx].lat; sumLon += originalPoints[idx].lon; });
+            const centroid = { lat: sumLat / cluster.length, lon: sumLon / cluster.length };
+            cluster.forEach(idx => pointCentroids[idx] = centroid);
+        });
+
+        const validCircles = []; 
+        for (let i = 0; i < n; i++) {
+            const center = originalPoints[i], coastalPoints = [], centroid = pointCentroids[i];
+            const distToCentroid = getDistance(centroid.lat, centroid.lon, center.lat, center.lon);
+            const outwardAngle = distToCentroid < 1 ? 0 : getBearing(centroid.lat, centroid.lon, center.lat, center.lon);
+            
+            for (let a = 0; a < 360; a += 15) { 
+                if (distToCentroid >= 1) {
+                    let diff = Math.abs((a - outwardAngle + 360) % 360); if (diff > 180) diff = 360 - diff;
+                    if (diff > 90) continue; 
+                }
+                const pt = getDestination(center.lat, center.lon, Math.random() * 5 + 45, a); pt.angle = a;
+                let isCoastal = true;
+                for (let k = 0; k < n; k++) {
+                    if (k === i) continue;
+                    if (getDistance(pt.lat, pt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { isCoastal = false; break; }
+                }
+                if (isCoastal) coastalPoints.push(pt);
+            }
+            if (coastalPoints.length > 0) validCircles.push({ index: i, center: center, points: coastalPoints });
+        }
+
+        const mCount = validCircles.length;
+        if (mCount === 0) generatedPoints.push(getDestination(originalPoints[0].lat, originalPoints[0].lon, 60, 0));
+        else {
+            const connections = []; 
+            for (let m = 0; m < mCount - 1; m++) {
+                let bestDist = Infinity, bestPair = null, backupPair = null, maxClearance = -Infinity;
+                for (let ptA of validCircles[m].points) {
+                    for (let ptB of validCircles[m+1].points) {
+                        let isSafe = true, minClearanceForLine = Infinity;
+                        for (let k = 0; k < n; k++) {
+                            const clearK = getSegmentDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon, originalPoints[k].lat, originalPoints[k].lon);
+                            minClearanceForLine = Math.min(minClearanceForLine, clearK);
+                            if (clearK <= 40) isSafe = false;
+                        }
+                        if (minClearanceForLine > maxClearance) { maxClearance = minClearanceForLine; backupPair = { exit: ptA, entry: ptB }; }
+                        if (isSafe && getDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon) < bestDist) {
+                            bestDist = getDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon); bestPair = { exit: ptA, entry: ptB };
+                        }
+                    }
+                } connections.push(bestPair || backupPair);
+            }
+
+            if (mCount === 1) generatedPoints.push(validCircles[0].points[0]);
+            else {
+                for (let m = 0; m < mCount; m++) {
+                    if (m === 0) generatedPoints.push(connections[0].exit);
+                    else if (m === mCount - 1) generatedPoints.push(connections[m - 1].entry);
+                    else {
+                        const ptIn = connections[m - 1].entry, ptOut = connections[m].exit; generatedPoints.push(ptIn);
+                        let diff = (ptOut.angle - ptIn.angle + 360) % 360, stepDir = 1; 
+                        if (diff > 180) { diff = 360 - diff; stepDir = -1; }
+                        if (diff > 0) {
+                            for (let s = 1; s < Math.floor(diff / 15); s++) { 
+                                const arcPt = getDestination(validCircles[m].center.lat, validCircles[m].center.lon, Math.random() * 5 + 45, (ptIn.angle + s * 15 * stepDir + 360) % 360);
+                                let arcSafe = true;
+                                for (let k = 0; k < n; k++) {
+                                    if (k === validCircles[m].index) continue;
+                                    if (getDistance(arcPt.lat, arcPt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { arcSafe = false; break; }
+                                }
+                                if(arcSafe) generatedPoints.push(arcPt);
+                            }
+                        } generatedPoints.push(ptOut);
+                    }
+                }
+            }
+        }
+        if (document.getElementById('densifyCheck').checked) {
+            generatedPoints = densifyRoute(generatedPoints, parseFloat(document.getElementById('minStep').value)||5, parseFloat(document.getElementById('maxStep').value)||10);
+        }
+    }
+
+    function drawMap() {
+        originalLayerGroup.clearLayers(); generatedLayerGroup.clearLayers();
+        originalPoints.forEach(pt => {
+            L.circle([pt.lat, pt.lon], { color: '#3498db', fillColor: '#3498db', fillOpacity: 0.1, weight: 1, radius: 40 }).addTo(originalLayerGroup);
+            L.circleMarker([pt.lat, pt.lon], { radius: 4, color: '#2980b9', fillColor: '#3498db', fillOpacity: 1 }).addTo(originalLayerGroup);
+  n(lat2));
         return { lat: lat2 * 180 / Math.PI, lon: lon2 * 180 / Math.PI };
     }
 
