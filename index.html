@@ -200,7 +200,7 @@
 <div class="container">
     <div class="app-header">
         <h1><span class="material-symbols-rounded">location_on</span>智慧島嶼防小人路線</h1>
-        <p>一鍵轉換 4 種安全格式，自動隱藏真實座標</p>
+        <p>一鍵轉換安全格式，自動隱藏真實座標</p>
     </div>
 
     <div class="card">
@@ -231,8 +231,8 @@
                 <span class="material-symbols-rounded">route</span> 路線生成模式
             </label>
             <select id="generationMode" class="input-box" style="cursor: pointer; font-weight: 500;">
-                <option value="astar">A* 最短路徑模式 (推薦：無死角、不繞遠路)</option>
-                <option value="envelope">傳統包絡線模式 (較大範圍的隨機繞行)</option>
+                <option value="astar">最短路徑模式 (極速貼邊 + 防禦雜訊)</option>
+                <option value="envelope">傳統包絡線模式 (大範圍隨機繞行)</option>
             </select>
         </div>
 
@@ -292,7 +292,7 @@
     </button>
 
     <div class="card" id="resultCard" style="display: none; border: 2px solid rgba(46, 204, 113, 0.6);">
-        <h3 class="card-title" style="color: #27ae60;"><span class="material-symbols-rounded">check_circle</span> 3. 生成成功！</h3>
+        <h3 class="card-title" style="color: #27ae60;"><span class="material-symbols-rounded">check_circle</span> 3. 生成成功</h3>
         
         <div id="routeStats" style="background: rgba(255, 255, 255, 0.6); padding: 15px; border-radius: 12px; margin-bottom: 15px; border: 1px solid rgba(255, 255, 255, 0.8); display: flex; flex-direction: column; gap: 10px;">
             <div style="display: flex; align-items: center; font-size: 0.95rem; color: var(--dark);">
@@ -319,7 +319,7 @@
                 <span class="material-symbols-rounded">link</span> 給群友的下載連結：
             </label>
             <textarea id="shareUrlInput" class="input-box" style="height: 180px; font-family: monospace; font-size: 0.85rem;" readonly></textarea>
-            <button class="btn btn-purple" style="margin-top: 12px;" onclick="copyShareLink()"><span class="material-symbols-rounded">content_copy</span> 一鍵複製到剪貼簿</button>
+            <button class="btn btn-purple" style="margin-top: 12px;" onclick="copyShareLink()"><span class="material-symbols-rounded">content_copy</span> 複製到剪貼簿</button>
             <div id="shareHint" style="text-align:center; font-size:0.85rem; color:var(--danger); margin-top:8px; font-weight:500;"></div>
         </div>
     </div>
@@ -327,7 +327,7 @@
 
 <div class="map-modal" id="mapModal">
     <div class="map-content">
-        <button class="close-map-btn" onclick="closeMap()">關閉地圖</button>
+        <button class="close-map-btn" onclick="closeMap()">關閉</button>
         <div id="map"></div>
     </div>
 </div>
@@ -476,24 +476,23 @@
         if (n === 0) return;
 
         let allSafeNodes = [];
-        let nodeId = 0;
         let circleNodes = Array(n).fill(null).map(() => []);
+        let nodeId = 0;
 
+        // 以精簡的 16 個節點（極速運算）貼緊 45m 邊緣
         for (let i = 0; i < n; i++) {
-            const center = originalPoints[i];
-            for (let a = 0; a < 360; a += 15) { 
-                const currentRandomDist = Math.random() * (50 - 45) + 45; 
-                const pt = getDestination(center.lat, center.lon, currentRandomDist, a);
-                
-                let isCoastal = true;
+            let center = originalPoints[i];
+            for (let a = 0; a < 360; a += 22.5) { 
+                let pt = getDestination(center.lat, center.lon, 45, a);
+                let isSafe = true;
                 for (let k = 0; k < n; k++) {
+                    if (k === i) continue;
                     if (getDistance(pt.lat, pt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) {
-                        isCoastal = false; break;
+                        isSafe = false; break;
                     }
                 }
-                
-                if (isCoastal) {
-                    let node = { id: nodeId++, lat: pt.lat, lon: pt.lon, circleIdx: i };
+                if (isSafe) {
+                    let node = { id: nodeId++, lat: pt.lat, lon: pt.lon, circleIdx: i, angle: a };
                     allSafeNodes.push(node);
                     circleNodes[i].push(node);
                 }
@@ -501,8 +500,13 @@
         }
 
         if (n === 1) {
-            if (circleNodes[0].length > 0) generatedPoints.push(circleNodes[0][0]);
-            else generatedPoints.push(getDestination(originalPoints[0].lat, originalPoints[0].lon, 45, 0));
+            if (circleNodes[0].length > 0) {
+                let node = circleNodes[0][0];
+                let noiseDist = 45 + (Math.random() * 4); 
+                generatedPoints.push(getDestination(originalPoints[0].lat, originalPoints[0].lon, noiseDist, node.angle));
+            } else {
+                generatedPoints.push(getDestination(originalPoints[0].lat, originalPoints[0].lon, 45 + Math.random() * 4, 0));
+            }
             return;
         }
 
@@ -577,7 +581,10 @@
         let currentStartNode = -1;
         if (circleNodes[0].length > 0) {
             currentStartNode = circleNodes[0][0].id;
-            generatedPoints.push(allSafeNodes[currentStartNode]);
+            // 寫入起點並加入隨機外推雜訊 (防外接圓反推)
+            let node = allSafeNodes[currentStartNode];
+            let center = originalPoints[node.circleIdx];
+            generatedPoints.push(getDestination(center.lat, center.lon, 45 + Math.random() * 4, node.angle));
         }
 
         for (let targetIdx = 1; targetIdx < n; targetIdx++) {
@@ -585,7 +592,9 @@
             
             if (currentStartNode === -1) {
                 currentStartNode = circleNodes[targetIdx][0].id;
-                generatedPoints.push(allSafeNodes[currentStartNode]);
+                let node = allSafeNodes[currentStartNode];
+                let center = originalPoints[node.circleIdx];
+                generatedPoints.push(getDestination(center.lat, center.lon, 45 + Math.random() * 4, node.angle));
                 continue;
             }
 
@@ -593,12 +602,17 @@
             
             if (result) {
                 for (let i = 1; i < result.path.length; i++) {
-                    generatedPoints.push(result.path[i]);
+                    let node = result.path[i];
+                    let center = originalPoints[node.circleIdx];
+                    // 在產出時才加入 0~4m 的微擾動雜訊
+                    let pt = getDestination(center.lat, center.lon, 45 + Math.random() * 4, node.angle);
+                    generatedPoints.push(pt);
                 }
                 currentStartNode = result.endNodeId;
             } else {
                 let backupEnd = circleNodes[targetIdx][0];
-                generatedPoints.push(backupEnd);
+                let center = originalPoints[backupEnd.circleIdx];
+                generatedPoints.push(getDestination(center.lat, center.lon, 45 + Math.random() * 4, backupEnd.angle));
                 currentStartNode = backupEnd.id;
             }
         }
@@ -744,7 +758,6 @@
                 drawMap();
             } catch (e) { console.warn("地圖略過", e); }
             
-            // 計算預估時間與總距離
             let totalDistMeters = calculateTotalDistance(generatedPoints);
             let speedVal = parseFloat(document.getElementById('speedInput').value) || 15;
             let speedUnit = document.getElementById('speedUnit').value;
