@@ -121,12 +121,10 @@
 
         <div class="form-group" style="margin-top: 15px; background: #fff3e0; padding: 12px; border-radius: 8px; border: 1px solid #f39c12;">
             <label style="color: #d35400;">3. 分享連結保留時間 (自動刪除)</label>
-            <select id="expireTimeSelect" class="text-input" style="background: white; cursor: pointer; border-color: #f39c12;">
-                <option value="1h">1 小時後自動銷毀</option>
-                <option value="12h">12 小時後自動銷毀</option>
-                <option value="24h" selected>24 小時後自動銷毀</option>
-                <option value="72h">3 天 (72小時) 後自動銷毀</option>
-            </select>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <input type="number" id="expireTimeInput" class="text-input" value="24" min="1" max="72" style="flex: 1;">
+                <span style="color: #d35400; font-weight: bold; white-space: nowrap;">小時後銷毀</span>
+            </div>
         </div>
 
         <button class="btn" onclick="processData()">⚙️ 執行生成包絡路線</button>
@@ -234,487 +232,173 @@
         return Math.hypot(dxC - t * dxB, dyC - t * dyB);
     }
 
+    // 🌟 核心防護機制升級：包覆 try...catch，讀取失敗時嚴格跳出警示
     async function processData() {
-        originalPoints = []; 
-        const fileInput = document.getElementById('fileInput');
-        const coordInput = document.getElementById('coordInput').value.trim();
-
-        if (fileInput.files.length > 0) {
-            const text = await fileInput.files[0].text(); parseGPX(text);
-        } else if (coordInput !== "") {
-            parseTextCoords(coordInput);
-        } else { return alert("請上傳 GPX 檔案或貼上座標！"); }
-
-        if (originalPoints.length === 0) return alert("無法解析座標，請檢查檔案內容！");
-
-        generateSmartPoints(); drawMap();
-        document.getElementById('actionButtons').style.display = 'block';
-        alert("✅ 軌跡生成成功！");
-    }
-
-    function parseGPX(xmlText) {
-        const xmlDoc = new DOMParser().parseFromString(xmlText, "text/xml");
-        for (let type of ['trkpt', 'rtept', 'wpt']) {
-            const nodes = xmlDoc.getElementsByTagName(type);
-            if (nodes.length > 0) {
-                for (let i = 0; i < nodes.length; i++) {
-                    const lat = parseFloat(nodes[i].getAttribute('lat')), lon = parseFloat(nodes[i].getAttribute('lon'));
-                    if (!isNaN(lat) && !isNaN(lon)) originalPoints.push({ lat, lon });
-                } break;
-            }
-        }
-    }
-
-    function parseTextCoords(text) {
-        text.split('\n').forEach(line => {
-            const parts = line.split(/[,\s\t]+/).filter(Boolean);
-            if (parts.length >= 2) {
-                const lat = parseFloat(parts[0]), lon = parseFloat(parts[1]);
-                if (!isNaN(lat) && !isNaN(lon)) originalPoints.push({ lat, lon });
-            }
-        });
-    }
-
-    function densifyRoute(points, minStep, maxStep) {
-        if (points.length < 2) return points;
-        const densePoints = [points[0]];
-        for (let i = 0; i < points.length - 1; i++) {
-            const p1 = points[i], p2 = points[i + 1];
-            const totalDist = getDistance(p1.lat, p1.lon, p2.lat, p2.lon);
-            if (totalDist > maxStep) {
-                const bearing = getBearing(p1.lat, p1.lon, p2.lat, p2.lon);
-                let currentDist = Math.random() * (maxStep - minStep) + minStep;
-                while (currentDist < totalDist) {
-                    densePoints.push(getDestination(p1.lat, p1.lon, currentDist, bearing));
-                    currentDist += Math.random() * (maxStep - minStep) + minStep;
-                }
-            } densePoints.push(p2);
-        } return densePoints;
-    }
-
-    function generateSmartPoints() {
-        generatedPoints = []; const n = originalPoints.length; if (n === 0) return;
-        const clusters = [], visited = new Set(), pointCentroids = new Array(n);
-        for (let i = 0; i < n; i++) {
-            if (visited.has(i)) continue;
-            const cluster = [], queue = [i]; visited.add(i);
-            while (queue.length > 0) {
-                const curr = queue.shift(); cluster.push(curr);
-                for (let j = 0; j < n; j++) {
-                    if (!visited.has(j) && getDistance(originalPoints[curr].lat, originalPoints[curr].lon, originalPoints[j].lat, originalPoints[j].lon) <= 90) {
-                        visited.add(j); queue.push(j);
-                    }
-                }
-            } clusters.push(cluster);
-        }
-        clusters.forEach(cluster => {
-            let sumLat = 0, sumLon = 0; cluster.forEach(idx => { sumLat += originalPoints[idx].lat; sumLon += originalPoints[idx].lon; });
-            const centroid = { lat: sumLat / cluster.length, lon: sumLon / cluster.length };
-            cluster.forEach(idx => pointCentroids[idx] = centroid);
-        });
-
-        const validCircles = []; 
-        for (let i = 0; i < n; i++) {
-            const center = originalPoints[i], coastalPoints = [], centroid = pointCentroids[i];
-            const distToCentroid = getDistance(centroid.lat, centroid.lon, center.lat, center.lon);
-            const outwardAngle = distToCentroid < 1 ? 0 : getBearing(centroid.lat, centroid.lon, center.lat, center.lon);
-            
-            for (let a = 0; a < 360; a += 15) { 
-                if (distToCentroid >= 1) {
-                    let diff = Math.abs((a - outwardAngle + 360) % 360); if (diff > 180) diff = 360 - diff;
-                    if (diff > 90) continue; 
-                }
-                const pt = getDestination(center.lat, center.lon, Math.random() * 5 + 45, a); pt.angle = a;
-                let isCoastal = true;
-                for (let k = 0; k < n; k++) {
-                    if (k === i) continue;
-                    if (getDistance(pt.lat, pt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { isCoastal = false; break; }
-                }
-                if (isCoastal) coastalPoints.push(pt);
-            }
-            if (coastalPoints.length > 0) validCircles.push({ index: i, center: center, points: coastalPoints });
-        }
-
-        const mCount = validCircles.length;
-        if (mCount === 0) generatedPoints.push(getDestination(originalPoints[0].lat, originalPoints[0].lon, 60, 0));
-        else {
-            const connections = []; 
-            for (let m = 0; m < mCount - 1; m++) {
-                let bestDist = Infinity, bestPair = null, backupPair = null, maxClearance = -Infinity;
-                for (let ptA of validCircles[m].points) {
-                    for (let ptB of validCircles[m+1].points) {
-                        let isSafe = true, minClearanceForLine = Infinity;
-                        for (let k = 0; k < n; k++) {
-                            const clearK = getSegmentDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon, originalPoints[k].lat, originalPoints[k].lon);
-                            minClearanceForLine = Math.min(minClearanceForLine, clearK);
-                            if (clearK <= 40) isSafe = false;
-                        }
-                        if (minClearanceForLine > maxClearance) { maxClearance = minClearanceForLine; backupPair = { exit: ptA, entry: ptB }; }
-                        if (isSafe && getDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon) < bestDist) {
-                            bestDist = getDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon); bestPair = { exit: ptA, entry: ptB };
-                        }
-                    }
-                } connections.push(bestPair || backupPair);
-            }
-
-            if (mCount === 1) generatedPoints.push(validCircles[0].points[0]);
-            else {
-                for (let m = 0; m < mCount; m++) {
-                    if (m === 0) generatedPoints.push(connections[0].exit);
-                    else if (m === mCount - 1) generatedPoints.push(connections[m - 1].entry);
-                    else {
-                        const ptIn = connections[m - 1].entry, ptOut = connections[m].exit; generatedPoints.push(ptIn);
-                        let diff = (ptOut.angle - ptIn.angle + 360) % 360, stepDir = 1; 
-                        if (diff > 180) { diff = 360 - diff; stepDir = -1; }
-                        if (diff > 0) {
-                            for (let s = 1; s < Math.floor(diff / 15); s++) { 
-                                const arcPt = getDestination(validCircles[m].center.lat, validCircles[m].center.lon, Math.random() * 5 + 45, (ptIn.angle + s * 15 * stepDir + 360) % 360);
-                                let arcSafe = true;
-                                for (let k = 0; k < n; k++) {
-                                    if (k === validCircles[m].index) continue;
-                                    if (getDistance(arcPt.lat, arcPt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { arcSafe = false; break; }
-                                }
-                                if(arcSafe) generatedPoints.push(arcPt);
-                            }
-                        } generatedPoints.push(ptOut);
-                    }
-                }
-            }
-        }
-        if (document.getElementById('densifyCheck').checked) {
-            generatedPoints = densifyRoute(generatedPoints, parseFloat(document.getElementById('minStep').value)||5, parseFloat(document.getElementById('maxStep').value)||10);
-        }
-    }
-
-    function drawMap() {
-        originalLayerGroup.clearLayers(); generatedLayerGroup.clearLayers();
-        originalPoints.forEach(pt => {
-            L.circle([pt.lat, pt.lon], { color: '#3498db', fillColor: '#3498db', fillOpacity: 0.1, weight: 1, radius: 40 }).addTo(originalLayerGroup);
-            L.circleMarker([pt.lat, pt.lon], { radius: 4, color: '#2980b9', fillColor: '#3498db', fillOpacity: 1 }).addTo(originalLayerGroup);
-  n(lat2));
-        return { lat: lat2 * 180 / Math.PI, lon: lon2 * 180 / Math.PI };
-    }
-
-    function getDistance(lat1, lon1, lat2, lon2) {
-        const R = 6378137; const dLat = (lat2 - lat1) * Math.PI / 180; const dLon = (lon2 - lon1) * Math.PI / 180;
-        const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
-        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    }
-
-    function getSegmentDistance(latA, lonA, latB, lonB, latC, lonC) {
-        const R = 6378137; const latMid = (latA + latB) / 2 * Math.PI / 180;
-        const dxB = (lonB - lonA) * Math.PI / 180 * Math.cos(latMid) * R; const dyB = (latB - latA) * Math.PI / 180 * R;
-        const dxC = (lonC - lonA) * Math.PI / 180 * Math.cos(latMid) * R; const dyC = (latC - latA) * Math.PI / 180 * R;
-        const l2 = dxB * dxB + dyB * dyB; if (l2 === 0) return getDistance(latA, lonA, latC, lonC); 
-        let t = Math.max(0, Math.min(1, (dxC * dxB + dyC * dyB) / l2)); 
-        return Math.hypot(dxC - t * dxB, dyC - t * dyB);
-    }
-
-    async function processData() {
-        originalPoints = []; 
-        const fileInput = document.getElementById('fileInput');
-        const coordInput = document.getElementById('coordInput').value.trim();
-
-        if (fileInput.files.length > 0) {
-            const text = await fileInput.files[0].text(); parseGPX(text);
-        } else if (coordInput !== "") {
-            parseTextCoords(coordInput);
-        } else { return alert("請上傳 GPX 檔案或貼上座標！"); }
-
-        if (originalPoints.length === 0) return alert("無法解析座標，請檢查檔案內容！");
-
-        generateSmartPoints(); drawMap();
-        document.getElementById('actionButtons').style.display = 'block';
-        alert("✅ 軌跡生成成功！");
-    }
-
-    function parseGPX(xmlText) {
-        const xmlDoc = new DOMParser().parseFromString(xmlText, "text/xml");
-        for (let type of ['trkpt', 'rtept', 'wpt']) {
-            const nodes = xmlDoc.getElementsByTagName(type);
-            if (nodes.length > 0) {
-                for (let i = 0; i < nodes.length; i++) {
-                    const lat = parseFloat(nodes[i].getAttribute('lat')), lon = parseFloat(nodes[i].getAttribute('lon'));
-                    if (!isNaN(lat) && !isNaN(lon)) originalPoints.push({ lat, lon });
-                } break;
-            }
-        }
-    }
-
-    function parseTextCoords(text) {
-        text.split('\n').forEach(line => {
-            const parts = line.split(/[,\s\t]+/).filter(Boolean);
-            if (parts.length >= 2) {
-                const lat = parseFloat(parts[0]), lon = parseFloat(parts[1]);
-                if (!isNaN(lat) && !isNaN(lon)) originalPoints.push({ lat, lon });
-            }
-        });
-    }
-
-    function densifyRoute(points, minStep, maxStep) {
-        if (points.length < 2) return points;
-        const densePoints = [points[0]];
-        for (let i = 0; i < points.length - 1; i++) {
-            const p1 = points[i], p2 = points[i + 1];
-            const totalDist = getDistance(p1.lat, p1.lon, p2.lat, p2.lon);
-            if (totalDist > maxStep) {
-                const bearing = getBearing(p1.lat, p1.lon, p2.lat, p2.lon);
-                let currentDist = Math.random() * (maxStep - minStep) + minStep;
-                while (currentDist < totalDist) {
-                    densePoints.push(getDestination(p1.lat, p1.lon, currentDist, bearing));
-                    currentDist += Math.random() * (maxStep - minStep) + minStep;
-                }
-            } densePoints.push(p2);
-        } return densePoints;
-    }
-
-    function generateSmartPoints() {
-        generatedPoints = []; const n = originalPoints.length; if (n === 0) return;
-        const clusters = [], visited = new Set(), pointCentroids = new Array(n);
-        for (let i = 0; i < n; i++) {
-            if (visited.has(i)) continue;
-            const cluster = [], queue = [i]; visited.add(i);
-            while (queue.length > 0) {
-                const curr = queue.shift(); cluster.push(curr);
-                for (let j = 0; j < n; j++) {
-                    if (!visited.has(j) && getDistance(originalPoints[curr].lat, originalPoints[curr].lon, originalPoints[j].lat, originalPoints[j].lon) <= 90) {
-                        visited.add(j); queue.push(j);
-                    }
-                }
-            } clusters.push(cluster);
-        }
-        clusters.forEach(cluster => {
-            let sumLat = 0, sumLon = 0; cluster.forEach(idx => { sumLat += originalPoints[idx].lat; sumLon += originalPoints[idx].lon; });
-            const centroid = { lat: sumLat / cluster.length, lon: sumLon / cluster.length };
-            cluster.forEach(idx => pointCentroids[idx] = centroid);
-        });
-
-        const validCircles = []; 
-        for (let i = 0; i < n; i++) {
-            const center = originalPoints[i], coastalPoints = [], centroid = pointCentroids[i];
-            const distToCentroid = getDistance(centroid.lat, centroid.lon, center.lat, center.lon);
-            const outwardAngle = distToCentroid < 1 ? 0 : getBearing(centroid.lat, centroid.lon, center.lat, center.lon);
-            
-            for (let a = 0; a < 360; a += 15) { 
-                if (distToCentroid >= 1) {
-                    let diff = Math.abs((a - outwardAngle + 360) % 360); if (diff > 180) diff = 360 - diff;
-                    if (diff > 90) continue; 
-                }
-                const pt = getDestination(center.lat, center.lon, Math.random() * 5 + 45, a); pt.angle = a;
-                let isCoastal = true;
-                for (let k = 0; k < n; k++) {
-                    if (k === i) continue;
-                    if (getDistance(pt.lat, pt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { isCoastal = false; break; }
-                }
-                if (isCoastal) coastalPoints.push(pt);
-            }
-            if (coastalPoints.length > 0) validCircles.push({ index: i, center: center, points: coastalPoints });
-        }
-
-        const mCount = validCircles.length;
-        if (mCount === 0) generatedPoints.push(getDestination(originalPoints[0].lat, originalPoints[0].lon, 60, 0));
-        else {
-            const connections = []; 
-            for (let m = 0; m < mCount - 1; m++) {
-                let bestDist = Infinity, bestPair = null, backupPair = null, maxClearance = -Infinity;
-                for (let ptA of validCircles[m].points) {
-                    for (let ptB of validCircles[m+1].points) {
-                        let isSafe = true, minClearanceForLine = Infinity;
-                        for (let k = 0; k < n; k++) {
-                            const clearK = getSegmentDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon, originalPoints[k].lat, originalPoints[k].lon);
-                            minClearanceForLine = Math.min(minClearanceForLine, clearK);
-                            if (clearK <= 40) isSafe = false;
-                        }
-                        if (minClearanceForLine > maxClearance) { maxClearance = minClearanceForLine; backupPair = { exit: ptA, entry: ptB }; }
-                        if (isSafe && getDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon) < bestDist) {
-                            bestDist = getDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon); bestPair = { exit: ptA, entry: ptB };
-                        }
-                    }
-                } connections.push(bestPair || backupPair);
-            }
-
-            if (mCount === 1) generatedPoints.push(validCircles[0].points[0]);
-            else {
-                for (let m = 0; m < mCount; m++) {
-                    if (m === 0) generatedPoints.push(connections[0].exit);
-                    else if (m === mCount - 1) generatedPoints.push(connections[m - 1].entry);
-                    else {
-                        const ptIn = connections[m - 1].entry, ptOut = connections[m].exit; generatedPoints.push(ptIn);
-                        let diff = (ptOut.angle - ptIn.angle + 360) % 360, stepDir = 1; 
-                        if (diff > 180) { diff = 360 - diff; stepDir = -1; }
-                        if (diff > 0) {
-                            for (let s = 1; s < Math.floor(diff / 15); s++) { 
-                                const arcPt = getDestination(validCircles[m].center.lat, validCircles[m].center.lon, Math.random() * 5 + 45, (ptIn.angle + s * 15 * stepDir + 360) % 360);
-                                let arcSafe = true;
-                                for (let k = 0; k < n; k++) {
-                                    if (k === validCircles[m].index) continue;
-                                    if (getDistance(arcPt.lat, arcPt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { arcSafe = false; break; }
-                                }
-                                if(arcSafe) generatedPoints.push(arcPt);
-                            }
-                        } generatedPoints.push(ptOut);
-                    }
-                }
-            }
-        }
-        if (document.getElementById('densifyCheck').checked) {
-            generatedPoints = densifyRoute(generatedPoints, parseFloat(document.getElementById('minStep').value)||5, parseFloat(document.getElementById('maxStep').value)||10);
-        }
-    }
-
-    function drawMap() {
-        originalLayerGroup.clearLayers(); generatedLayerGroup.clearLayers();
-        originalPoints.forEach(pt => {
-            L.circle([pt.lat, pt.lon], { color: '#3498db', fillColor: '#3498db', fillOpacity: 0.1, weight: 1, radius: 40 }).addTo(originalLayerGroup);
-            L.circleMarker([pt.lat, pt.lon], { radius: 4, color: '#2980b9', fillColor: '#3498db', fillOpacity: 1 }).addTo(originalLayerGroup);
-        });
-        generatedPoints.forEach(pt => { L.circleMarker([pt.lat, pt.lon], { radius: 3, color: '#c0392b', fillColor: '#e74c3c', fillOpacity: 1 }).addTo(generatedLayerGroup); });
-        if (originalPoints.length > 1) L.polyline(originalPoints.map(p => [p.lat, p.lon]), { color: '#3498db', weight: 3, opacity: 0.7 }).addTo(originalLayerGroup);
-        if (generatedPoints.length > 1) L.polyline(generatedPoints.map(p => [p.lat, p.lon]), { color: '#e74c3c', weight: 3, opacity: 0.7 }).addTo(generatedLayerGroup);
-    }
-
-    // =========================================================
-    // 🌟 核心：四種格式轉換邏輯
-    // =========================================================
-
-    function getGPXString(format, routeName) {
-        let gpxContent = "";
-        let trackPoints = generatedPoints;
-        let baseTime = new Date(); 
-
-        if (format === 'anyTo') {
-            gpxContent = `<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="GPX Smart Generator" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk>\n    <name>${routeName}</name>\n    <trkseg>\n`;
-            trackPoints.forEach(p => { gpxContent += `      <trkpt lat="${p.lat.toFixed(6)}" lon="${p.lon.toFixed(6)}"></trkpt>\n`; });
-            gpxContent += `    </trkseg>\n  </trk>\n</gpx>`;
-        } 
-        else if (format === 'iTools') {
-            gpxContent = `<?xml version="1.0" encoding="UTF-8" ?>\n<gpx>\n    <iToolsData speed="260.0" link="https://www.thinkskysoft.com" loop="0">\n        <rights>Copyright (c) 2018, thinkskysoft</rights>\n    </iToolsData>\n`;
-            trackPoints.forEach(p => { gpxContent += `    <wpt lat="${p.lat.toFixed(6)}" lon="${p.lon.toFixed(6)}">\n        <name>WP1</name>\n    </wpt>\n`; });
-            gpxContent += `</gpx>`;
-        } 
-        else if (format === 'flashman') {
-            gpxContent = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.topografix.com/GPX/1/1" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd" version="1.1" creator="GPX Smart Generator">\n`;
-            let fIdx = 1;
-            trackPoints.forEach(p => {
-                baseTime.setSeconds(baseTime.getSeconds() + 2); // 每個點遞增 2 秒
-                let pointTime = baseTime.toISOString();
-                gpxContent += `  <wpt lat="${p.lat.toFixed(6)}" lon="${p.lon.toFixed(6)}">\n`;
-                gpxContent += `    <time>${pointTime}</time>\n`;
-                gpxContent += `    <name><![CDATA[路徑點 ${fIdx}]]></name>\n`;
-                gpxContent += `  </wpt>\n`;
-                fIdx++;
-            });
-            gpxContent += `</gpx>`;
-        } 
-        else {
-            // 預設 Joysticks
-            gpxContent = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="GPX Smart Generator">\n  <trk>\n    <name>${routeName}</name>\n    <trkseg>\n`;
-            trackPoints.forEach(p => { 
-                baseTime.setSeconds(baseTime.getSeconds() + 2); // 每個點遞增 2 秒
-                let pointTime = baseTime.toISOString();
-                gpxContent += `      <trkpt lat="${p.lat.toFixed(6)}" lon="${p.lon.toFixed(6)}">\n`;
-                gpxContent += `        <time>${pointTime}</time>\n`;
-                gpxContent += `      </trkpt>\n`;
-            });
-            gpxContent += `    </trkseg>\n  </trk>\n</gpx>`;
-        }
-        return gpxContent;
-    }
-
-    // 本機直接下載 (給站長自己用)
-    function exportGPX(format = 'joysticks') {
-        if (generatedPoints.length === 0) return;
-        let baseName = document.getElementById('customFileName').value.trim() || "智慧防小人路線";
-        
-        const gpxData = getGPXString(format, baseName);
-        const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${baseName}_Joysticks.gpx`;
-        document.body.appendChild(a);
-        a.click();
-        
-        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 0);
-    }
-
-    // =========================================================
-    // 🌟 全新機制：換成更強的 Litterbox 雲端上傳
-    // =========================================================
-    async function generateShareLink() {
-        if (generatedPoints.length === 0) return alert("請先執行生成路線！");
-
-        const shareBtn = document.getElementById('generateLinkBtn');
-        shareBtn.disabled = true;
-        shareBtn.innerText = "⏳ 檔案上傳中...";
-        shareBtn.style.backgroundColor = "#7f8c8d";
-
-        const shareContainer = document.getElementById('shareLinkContainer');
-        const urlInput = document.getElementById('shareUrlInput');
-        shareContainer.style.display = 'block';
-        urlInput.value = "⏳ 正在將 4 種格式分別加密上傳至最強雲端伺服器，請稍候...\n(大約需要 5 到 10 秒鐘)";
-
-        let baseName = document.getElementById('customFileName').value.trim() || "分享的路線";
-        let firstCoord = generatedPoints.length > 0 ? `${generatedPoints[0].lat.toFixed(6)}, ${generatedPoints[0].lon.toFixed(6)}` : "無";
-
-        let uniqueStamp = new Date().getTime();
-
-        const formats = [
-            { id: 'joysticks', name: 'Joysticks ', suffix: '_Joysticks' },
-            { id: 'anyTo', name: 'AnyTo', suffix: '_AnyTo' },
-            { id: 'iTools', name: '魅影版', suffix: '_魅影' },
-            { id: 'flashman', name: 'Flashman', suffix: '_Flashman' }
-        ];
-
-        let linksText = `📍 首花座標：${firstCoord}\n\n`;
-
         try {
-            for (let fmt of formats) {
-                const gpxData = getGPXString(fmt.id, baseName);
-                const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
-                const formData = new FormData();
-                
-                // 🌟 Litterbox 要求的參數
-                formData.append('reqtype', 'fileupload');
-                formData.append('time', '1h'); // 保留 1 小時
-                formData.append('fileToUpload', blob, `${baseName}${fmt.suffix}_${uniqueStamp}.gpx`);
+            originalPoints = []; 
+            const fileInput = document.getElementById('fileInput');
+            const coordInput = document.getElementById('coordInput').value.trim();
 
-                // 🌟 改用最穩定、開放跨網域(CORS)的 Litterbox API
-                const response = await fetch('https://litterbox.catbox.moe/api.php', { method: 'POST', body: formData });
-                
-                if (!response.ok) {
-                    throw new Error(`伺服器異常 (代碼: ${response.status})`);
-                }
-
-                // Litterbox 回傳的是乾淨的純文字網址
-                const downloadUrl = await response.text();
-
-                if (downloadUrl.startsWith('http')) {
-                    linksText += `🔗 ${fmt.name}：\n${downloadUrl}\n\n`;
-                } else {
-                    linksText += `🔗 ${fmt.name}：上傳失敗\n\n`;
-                }
-                
-                // 稍微延遲一下避免免費空間太忙碌
-                await new Promise(resolve => setTimeout(resolve, 800));
+            if (fileInput.files.length > 0) {
+                const text = await fileInput.files[0].text(); 
+                parseGPX(text);
+            } else if (coordInput !== "") {
+                parseTextCoords(coordInput);
+            } else { 
+                alert("當我給你的檔案無法讀取或無法清楚讀取的時候，直接告訴我。請確實上傳 GPX 檔案或貼上座標！"); 
+                return;
             }
 
-            urlInput.value = linksText.trim();
+            if (originalPoints.length === 0) {
+                alert("當我給你的檔案無法讀取或無法清楚讀取的時候，直接告訴我。目前無法解析座標，請檢查檔案內容或輸入格式！");
+                return;
+            }
+
+            generateSmartPoints(); 
+            drawMap();
+            
+            document.getElementById('actionButtons').style.display = 'block';
+            alert("✅ 軌跡生成成功！");
+
         } catch (error) {
-            console.error("詳細錯誤：", error);
-            urlInput.value = `❌ 發生錯誤：${error.message || "網路連線被阻擋"}\n\n(可能原因：瀏覽器的擋廣告外掛誤殺了上傳動作，請嘗試關閉擋廣告功能後再試一次。)`;
-        } finally {
-            shareBtn.disabled = false;
-            shareBtn.innerText = "🔗 產生分享連結";
-            shareBtn.style.backgroundColor = "#9b59b6";
+            console.error("生成過程中發生錯誤：", error);
+            alert("當我給你的檔案無法讀取或無法清楚讀取的時候，直接告訴我。系統發生預期外的錯誤：" + error.message);
         }
     }
 
-    function copyShareLink() {
-        document.getElementById("shareUrlInput").select();
-        document.execCommand("copy");
-        alert("✅ 連結與座標已複製！可以直接貼到 LINE 給群友了。");
+    function parseGPX(xmlText) {
+        const xmlDoc = new DOMParser().parseFromString(xmlText, "text/xml");
+        for (let type of ['trkpt', 'rtept', 'wpt']) {
+            const nodes = xmlDoc.getElementsByTagName(type);
+            if (nodes.length > 0) {
+                for (let i = 0; i < nodes.length; i++) {
+                    const lat = parseFloat(nodes[i].getAttribute('lat')), lon = parseFloat(nodes[i].getAttribute('lon'));
+                    if (!isNaN(lat) && !isNaN(lon)) originalPoints.push({ lat, lon });
+                } break;
+            }
+        }
     }
-</script>
-</body>
-</html>
+
+    function parseTextCoords(text) {
+        text.split('\n').forEach(line => {
+            const parts = line.split(/[,\s\t]+/).filter(Boolean);
+            if (parts.length >= 2) {
+                const lat = parseFloat(parts[0]), lon = parseFloat(parts[1]);
+                if (!isNaN(lat) && !isNaN(lon)) originalPoints.push({ lat, lon });
+            }
+        });
+    }
+
+    function densifyRoute(points, minStep, maxStep) {
+        if (points.length < 2) return points;
+        const densePoints = [points[0]];
+        for (let i = 0; i < points.length - 1; i++) {
+            const p1 = points[i], p2 = points[i + 1];
+            const totalDist = getDistance(p1.lat, p1.lon, p2.lat, p2.lon);
+            if (totalDist > maxStep) {
+                const bearing = getBearing(p1.lat, p1.lon, p2.lat, p2.lon);
+                let currentDist = Math.random() * (maxStep - minStep) + minStep;
+                while (currentDist < totalDist) {
+                    densePoints.push(getDestination(p1.lat, p1.lon, currentDist, bearing));
+                    currentDist += Math.random() * (maxStep - minStep) + minStep;
+                }
+            } densePoints.push(p2);
+        } return densePoints;
+    }
+
+    function generateSmartPoints() {
+        generatedPoints = []; const n = originalPoints.length; if (n === 0) return;
+        const clusters = [], visited = new Set(), pointCentroids = new Array(n);
+        for (let i = 0; i < n; i++) {
+            if (visited.has(i)) continue;
+            const cluster = [], queue = [i]; visited.add(i);
+            while (queue.length > 0) {
+                const curr = queue.shift(); cluster.push(curr);
+                for (let j = 0; j < n; j++) {
+                    if (!visited.has(j) && getDistance(originalPoints[curr].lat, originalPoints[curr].lon, originalPoints[j].lat, originalPoints[j].lon) <= 90) {
+                        visited.add(j); queue.push(j);
+                    }
+                }
+            } clusters.push(cluster);
+        }
+        clusters.forEach(cluster => {
+            let sumLat = 0, sumLon = 0; cluster.forEach(idx => { sumLat += originalPoints[idx].lat; sumLon += originalPoints[idx].lon; });
+            const centroid = { lat: sumLat / cluster.length, lon: sumLon / cluster.length };
+            cluster.forEach(idx => pointCentroids[idx] = centroid);
+        });
+
+        const validCircles = []; 
+        for (let i = 0; i < n; i++) {
+            const center = originalPoints[i], coastalPoints = [], centroid = pointCentroids[i];
+            const distToCentroid = getDistance(centroid.lat, centroid.lon, center.lat, center.lon);
+            const outwardAngle = distToCentroid < 1 ? 0 : getBearing(centroid.lat, centroid.lon, center.lat, center.lon);
+            
+            for (let a = 0; a < 360; a += 15) { 
+                if (distToCentroid >= 1) {
+                    let diff = Math.abs((a - outwardAngle + 360) % 360); if (diff > 180) diff = 360 - diff;
+                    if (diff > 90) continue; 
+                }
+                const pt = getDestination(center.lat, center.lon, Math.random() * 5 + 45, a); pt.angle = a;
+                let isCoastal = true;
+                for (let k = 0; k < n; k++) {
+                    if (k === i) continue;
+                    if (getDistance(pt.lat, pt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { isCoastal = false; break; }
+                }
+                if (isCoastal) coastalPoints.push(pt);
+            }
+            if (coastalPoints.length > 0) validCircles.push({ index: i, center: center, points: coastalPoints });
+        }
+
+        const mCount = validCircles.length;
+        if (mCount === 0) generatedPoints.push(getDestination(originalPoints[0].lat, originalPoints[0].lon, 60, 0));
+        else {
+            const connections = []; 
+            for (let m = 0; m < mCount - 1; m++) {
+                let bestDist = Infinity, bestPair = null, backupPair = null, maxClearance = -Infinity;
+                for (let ptA of validCircles[m].points) {
+                    for (let ptB of validCircles[m+1].points) {
+                        let isSafe = true, minClearanceForLine = Infinity;
+                        for (let k = 0; k < n; k++) {
+                            const clearK = getSegmentDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon, originalPoints[k].lat, originalPoints[k].lon);
+                            minClearanceForLine = Math.min(minClearanceForLine, clearK);
+                            if (clearK <= 40) isSafe = false;
+                        }
+                        if (minClearanceForLine > maxClearance) { maxClearance = minClearanceForLine; backupPair = { exit: ptA, entry: ptB }; }
+                        if (isSafe && getDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon) < bestDist) {
+                            bestDist = getDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon); bestPair = { exit: ptA, entry: ptB };
+                        }
+                    }
+                } connections.push(bestPair || backupPair);
+            }
+
+            if (mCount === 1) generatedPoints.push(validCircles[0].points[0]);
+            else {
+                for (let m = 0; m < mCount; m++) {
+                    if (m === 0) generatedPoints.push(connections[0].exit);
+                    else if (m === mCount - 1) generatedPoints.push(connections[m - 1].entry);
+                    else {
+                        const ptIn = connections[m - 1].entry, ptOut = connections[m].exit; generatedPoints.push(ptIn);
+                        let diff = (ptOut.angle - ptIn.angle + 360) % 360, stepDir = 1; 
+                        if (diff > 180) { diff = 360 - diff; stepDir = -1; }
+                        if (diff > 0) {
+                            for (let s = 1; s < Math.floor(diff / 15); s++) { 
+                                const arcPt = getDestination(validCircles[m].center.lat, validCircles[m].center.lon, Math.random() * 5 + 45, (ptIn.angle + s * 15 * stepDir + 360) % 360);
+                                let arcSafe = true;
+                                for (let k = 0; k < n; k++) {
+                                    if (k === validCircles[m].index) continue;
+                                    if (getDistance(arcPt.lat, arcPt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { arcSafe = false; break; }
+                                }
+                                if(arcSafe) generatedPoints.push(arcPt);
+                            }
+                        } generatedPoints.push(ptOut);
+                    }
+                }
+            }
+        }
+        if (document.getElementById('densifyCheck').checked) {
+            generatedPoints = densifyRoute(generatedPoints, parseFloat(document.getElementById('minStep').value)||5, parseFloat(document.getElementById('maxStep').value)||10);
+        }
+    }
+
+    function drawMap() {
+        orig
