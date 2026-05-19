@@ -741,36 +741,36 @@
                 const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
                 const formData = new FormData();
                 
-                // tmpfiles.org 只需要附加檔案即可
-                formData.append('file', blob, `${baseName}${fmt.suffix}_${uniqueStamp}.gpx`);
+                // 改用 Litterbox API，原生支援跨域 (CORS)，不需要 proxy！
+                // 參數完全對應你設定的 apiTime (1h, 12h, 24h, 72h)
+                formData.append('reqtype', 'fileupload');
+                formData.append('time', apiTime); 
+                formData.append('fileToUpload', blob, `${baseName}${fmt.suffix}_${uniqueStamp}.gpx`);
 
-                // 使用 CORS Proxy 繞過瀏覽器的跨站限制
-                const targetUrl = 'https://tmpfiles.org/api/v1/upload';
-                const proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(targetUrl);
-
-                const response = await fetch(proxyUrl, { 
-                 method: 'POST', 
-                 body: formData 
+                // 直接呼叫 Litterbox
+                const response = await fetch('https://litterbox.catbox.moe/api', { 
+                    method: 'POST', 
+                    body: formData 
                 });
                 
-                if (!response.ok) throw new Error(`上傳失敗 (Status: ${response.status})`);
+                if (!response.ok) throw new Error(`伺服器拒絕回應 (Status: ${response.status})`);
 
-                const data = await response.json();
+                // Litterbox 成功時，回傳的直接是「純文字網址」，而不是 JSON
+                const downloadUrl = await response.text();
                 
-                if (data.status === 'success') {
-                    // 將網址從 /tmpfiles.org/ 轉為 /tmpfiles.org/dl/ 以支援直接下載
-                    const downloadUrl = data.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/');
+                if (downloadUrl.startsWith("http")) {
                     linksText += `${fmt.name}：\n${downloadUrl}\n\n`;
                 } else {
-                    linksText += `${fmt.name}：上傳失敗\n\n`;
+                    // 如果回傳的不是網址，代表發生錯誤
+                    linksText += `${fmt.name}：上傳失敗 (${downloadUrl})\n\n`;
                 }
                 
-                // 稍微延遲避免發送過快被鎖 API
-                await new Promise(resolve => setTimeout(resolve, 800));
+                // 稍微延遲 1 秒，避免連續發送過快被鎖 IP
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
             urlInput.value = linksText.trim();
         } catch (error) {
-            urlInput.value = `[錯誤]：${error.message}`;
+            urlInput.value = `[錯誤]：${error.message}\n請檢查網路連線或稍後再試。`;
         } finally {
             shareBtn.disabled = false;
             shareBtn.innerHTML = '<span class="material-symbols-rounded">share</span> 重新產生連結';
