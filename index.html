@@ -741,30 +741,28 @@
                 const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
                 const formData = new FormData();
                 
-                formData.append('reqtype', 'fileupload');
-                formData.append('time', apiTime); 
-                formData.append('fileToUpload', blob, `${baseName}${fmt.suffix}_${uniqueStamp}.gpx`);
+                // tmpfiles.org 只需要附加檔案即可
+                formData.append('file', blob, `${baseName}${fmt.suffix}_${uniqueStamp}.gpx`);
 
-                // 1. 設定原本要請求的 Litterbox 目標網址
-                const targetUrl = 'https://litterbox.catbox.moe/resources/internals/api.php';
-
-                // 2. 使用 corsproxy.io 作為中介代理（這是一個免費且不需要註冊的代理服務）
-                const proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(targetUrl);
-
-                // 3. 將 fetch 的目標改為代理網址，formData 保持不變傳過去
-                const response = await fetch(proxyUrl, { 
+                // 直接呼叫 API，不再需要 corsproxy！
+                const response = await fetch('https://tmpfiles.org/api/v1/upload', { 
                     method: 'POST', 
                     body: formData 
                 });
-                if (!response.ok) throw new Error(`響應異常 (Status: ${response.status})`);
+                
+                if (!response.ok) throw new Error(`上傳失敗 (Status: ${response.status})`);
 
-                const downloadUrl = await response.text();
-                if (downloadUrl.startsWith('http')) {
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    // 將網址從 /tmpfiles.org/ 轉為 /tmpfiles.org/dl/ 以支援直接下載
+                    const downloadUrl = data.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/');
                     linksText += `${fmt.name}：\n${downloadUrl}\n\n`;
                 } else {
                     linksText += `${fmt.name}：上傳失敗\n\n`;
                 }
                 
+                // 稍微延遲避免發送過快被鎖 API
                 await new Promise(resolve => setTimeout(resolve, 800));
             }
             urlInput.value = linksText.trim();
