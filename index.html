@@ -193,6 +193,9 @@
         .close-map-btn { position: absolute; top: 15px; right: 15px; z-index: 10000; background: rgba(231,76,60,0.95); color: white; border: none; padding: 10px 20px; border-radius: 20px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
 
         .hint-text { font-size: 0.8rem; color: var(--gray); margin-top: 6px; line-height: 1.4; font-weight: normal;}
+        
+        .tutorial-list { margin: 5px 0 12px 0; padding-left: 20px; font-size: 0.85rem; color: #34495e; line-height: 1.5; }
+        .tutorial-list a { color: var(--primary); font-weight: bold; text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -273,17 +276,29 @@
             <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center;">
                 <span class="material-symbols-rounded">label</span> 路線自訂名稱
             </label>
-            <input type="text" id="customFileName" class="input-box" placeholder="">
+            <input type="text" id="customFileName" class="input-box" placeholder="例如：防小人作戰路線">
         </div>
+    </div>
 
-        <div style="margin-top: 18px;">
+    <div class="card" style="border: 1px solid rgba(155, 89, 182, 0.4);">
+        <h3 class="card-title" style="color: var(--purple); border-bottom-color: rgba(155, 89, 182, 0.3);">
+            <span class="material-symbols-rounded">cloud_queue</span> 3. Gofile 個人雲端設定
+        </h3>
+        <p class="hint-text" style="color: var(--dark); font-weight: 500; font-size: 0.9rem; margin-bottom: 5px;">
+            分享功能需要使用您個人的 Gofile 空間，請依照以下步驟操作：
+        </p>
+        <ol class="tutorial-list">
+            <li>前往 <a href="https://gofile.io/" target="_blank">Gofile 官網 (點此開啟)</a> 免費註冊並登入。</li>
+            <li>點擊網頁左上角的 <b>「Add Acount」</b> 進行註冊。</li>
+            <li>註冊成功後點選左上角帳戶名選擇 <b>「My Profile」</b> 。</li>
+            <li>上滑畫面，並複製畫面中的 <b>「API token」</b> 貼到下方欄位（系統會自動幫您記住）。</li>
+        </ol>
+
+        <div>
             <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center;">
-                <span class="material-symbols-rounded">hourglass_empty</span> 分享連結保留時間
+                <span class="material-symbols-rounded">vpn_key</span> 您的 Gofile API Token
             </label>
-            <div style="display: flex; gap: 10px; align-items: center;">
-                <input type="number" id="expireTimeInput" class="input-box" value="24" min="1" max="72" style="flex:1;">
-                <span style="font-weight:bold; color:var(--dark); white-space:nowrap; font-size: 0.95rem;">小時後自動銷毀</span>
-            </div>
+            <input type="password" id="userGofileToken" class="input-box" placeholder="請在此貼上您的 API Token (例如：oS4e5...)">
         </div>
     </div>
 
@@ -292,7 +307,7 @@
     </button>
 
     <div class="card" id="resultCard" style="display: none; border: 2px solid rgba(46, 204, 113, 0.6);">
-        <h3 class="card-title" style="color: #27ae60;"><span class="material-symbols-rounded">check_circle</span> 3. 生成成功！</h3>
+        <h3 class="card-title" style="color: #27ae60;"><span class="material-symbols-rounded">check_circle</span> 4. 生成成功！</h3>
         
         <div id="routeStats" style="background: rgba(255, 255, 255, 0.6); padding: 15px; border-radius: 12px; margin-bottom: 15px; border: 1px solid rgba(255, 255, 255, 0.8); display: flex; flex-direction: column; gap: 10px;">
             <div style="display: flex; align-items: center; font-size: 0.95rem; color: var(--dark);">
@@ -316,11 +331,11 @@
 
         <div id="shareLinkContainer" style="display: none; margin-top: 15px;">
             <label style="font-weight:bold; color:var(--purple); margin-bottom:8px; display:flex; align-items:center;">
-                <span class="material-symbols-rounded">link</span> 給群友的下載連結：
+                <span class="material-symbols-rounded">link</span> 上傳成果與通知文字：
             </label>
-            <textarea id="shareUrlInput" class="input-box" style="height: 180px; font-family: monospace; font-size: 0.85rem;" readonly></textarea>
-            <button class="btn btn-purple" style="margin-top: 12px;" onclick="copyShareLink()"><span class="material-symbols-rounded">content_copy</span> 一鍵複製到 LINE</button>
-            <div id="shareHint" style="text-align:center; font-size:0.85rem; color:var(--danger); margin-top:8px; font-weight:500;"></div>
+            <textarea id="shareUrlInput" class="input-box" style="height: 140px; font-family: monospace; font-size: 0.85rem;" readonly></textarea>
+            <button class="btn btn-purple" style="margin-top: 12px;" onclick="copyShareLink()"><span class="material-symbols-rounded">content_copy</span> 一鍵複製文字</button>
+            <div id="shareHint" style="text-align:center; font-size:0.85rem; color:var(--success); margin-top:8px; font-weight:500;"></div>
         </div>
     </div>
 </div>
@@ -334,6 +349,14 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
+    // --- 網頁載入時：自動幫使用者讀取先前記住的 Token ---
+    document.addEventListener("DOMContentLoaded", () => {
+        const savedToken = localStorage.getItem("user_gofile_api_token");
+        if (savedToken) {
+            document.getElementById("userGofileToken").value = savedToken;
+        }
+    });
+
     // --- UI 互動邏輯 ---
     function updateFileName() {
         const fileInput = document.getElementById('fileInput');
@@ -568,11 +591,12 @@
             const centroid = { lat: sumLat / cluster.length, lon: sumLon / cluster.length };
             cluster.forEach(idx => pointCentroids[idx] = centroid);
         });
-        const validCircles = []; 
+        
         for (let i = 0; i < n; i++) {
             const center = originalPoints[i], centroid = pointCentroids[i];
             const distToCentroid = getDistance(centroid.lat, centroid.lon, center.lat, center.lon);
             const outwardAngle = distToCentroid < 1 ? 0 : getBearing(centroid.lat, centroid.lon, center.lat, center.lon);
+            let coastalPoints = [];
             for (let a = 0; a < 360; a += 15) { 
                 if (distToCentroid >= 1) {
                     let diff = Math.abs((a - outwardAngle + 360) % 360); if (diff > 180) diff = 360 - diff;
@@ -586,9 +610,13 @@
                 }
                 if (isCoastal) coastalPoints.push(pt);
             }
-            if (coastalPoints.length > 0) validCircles.push({ index: i, center: center, points: coastalPoints });
+            if (coastalPoints.length > 0) {
+                generatedPoints.push(coastalPoints[Math.floor(coastalPoints.length / 2)]);
+            } else {
+                let fallbackPt = getDestination(center.lat, center.lon, 45, outwardAngle);
+                generatedPoints.push(fallbackPt);
+            }
         }
-        // ... (Envelope 模式生成邏輯與原本相同，此處省略以保持精簡) ...
     }
 
     function calculateTotalDistance(points) {
@@ -691,21 +719,58 @@
         if (generatedPoints.length > 1) L.polyline(generatedPoints.map(p => [p.lat, p.lon]), { color: '#E74C3C', weight: 3, opacity: 0.7 }).addTo(generatedLayerGroup);
     }
 
+    function exportGPX(format) {
+        if (generatedPoints.length === 0) return alert("請先生成路線！");
+        let baseName = document.getElementById('customFileName').value.trim() || "防小人路線";
+        let gpxText = getGPXString(format, baseName);
+        let blob = new Blob([gpxText], { type: 'application/gpx+xml' });
+        let url = URL.createObjectURL(blob);
+        let a = document.createElement('a');
+        let uniqueStamp = new Date().getTime();
+        a.href = url;
+        a.download = `${baseName}_${format}_${uniqueStamp}.gpx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
     function getGPXString(format, routeName) {
-        let gpxContent = "";
-        let trackPoints = generatedPoints;
+        let baseName = routeName || "防小人路線";
         let baseTime = new Date(); 
+        let gpxContent = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+        gpxContent += `<gpx version="1.1" creator="GPX Smart Island Generator" xmlns="http://www.topografix.com/GPX/1/1">\n`;
+        gpxContent += `  <metadata>\n    <name>${baseName}</name>\n  </metadata>\n`;
+        gpxContent += `  <trk>\n    <name>${baseName} (${format})</name>\n    <trkseg>\n`;
         
-        // ... (省略部分以維持精簡，GPX邏輯保持與原版一致) ...
+        generatedPoints.forEach((pt, idx) => {
+            let timeStr = new Date(baseTime.getTime() + idx * 3000).toISOString();
+            gpxContent += `      <trkpt lat="${pt.lat.toFixed(6)}" lon="${pt.lon.toFixed(6)}">\n`;
+            gpxContent += `        <time>${timeStr}</time>\n`;
+            gpxContent += `      </trkpt>\n`;
+        });
+        
+        gpxContent += `    </trkseg>\n  </trk>\n</gpx>`;
         return gpxContent;
     }
 
+    // --- 核心上傳邏輯：移除資料夾建立，直接上傳至帳號根目錄 ---
     async function generateShareLink() {
         if (generatedPoints.length === 0) return alert("請先生成路線！");
 
+        // 讀取使用者填寫的 Token
+        const myGofileToken = document.getElementById('userGofileToken').value.trim();
+        if (!myGofileToken) {
+            alert("請先完成第 3 步驟，填寫您的 Gofile API Token！\n（您可以點擊教學中的連結去免費註冊取得）");
+            return;
+        }
+
+        // 自動儲存到瀏覽器 localStorage
+        localStorage.setItem("user_gofile_api_token", myGofileToken);
+
         const shareBtn = document.getElementById('generateLinkBtn');
         shareBtn.disabled = true;
-        shareBtn.innerHTML = '<span class="material-symbols-rounded">cloud_upload</span> 上傳中...';
+        shareBtn.innerHTML = '<span class="material-symbols-rounded">cloud_upload</span> 正在上傳至您的空間...';
         shareBtn.style.opacity = "0.7";
 
         const shareContainer = document.getElementById('shareLinkContainer');
@@ -713,16 +778,7 @@
         const hintDiv = document.getElementById('shareHint');
         
         shareContainer.style.display = 'block';
-        urlInput.value = "[系統] 正在將格式上傳至安全節點...";
-
-        let userHours = parseInt(document.getElementById('expireTimeInput').value) || 24;
-        let apiTime = '24h'; let realHours = 24;
-        if (userHours <= 1) { apiTime = '1h'; realHours = 1; }
-        else if (userHours <= 12) { apiTime = '12h'; realHours = 12; }
-        else if (userHours <= 24) { apiTime = '24h'; realHours = 24; }
-        else { apiTime = '72h'; realHours = 72; }
-
-        hintDiv.innerText = `提示：檔案將於 ${realHours} 小時後銷毀。`;
+        urlInput.value = "[系統] 正在呼叫 API，將四種模擬格式上傳至您的專屬雲端帳號根目錄...";
 
         let baseName = document.getElementById('customFileName').value.trim() || "防小人路線";
         let uniqueStamp = new Date().getTime();
@@ -734,57 +790,54 @@
             { id: 'flashman', name: 'Flashman', suffix: '_Flashman' }
         ];
 
-        let linksText = "";
         try {
-            // 【重要】請把下方引號內的亂碼，換成你剛剛複製的 Gofile API Token
-            const myGofileToken = 'oS4e5Nt0T9y7CXzitSjTtdgXOshypo0c'; 
-            
-            // 1. 先向 Gofile 請求目前最佳的伺服器節點 (Gofile 的特色機制)
+            // --- 動作 1：取得最佳上傳伺服器節點 ---
             const serverRes = await fetch('https://api.gofile.io/servers', { method: 'GET' });
-            if (!serverRes.ok) throw new Error(`無法取得伺服器 (Status: ${serverRes.status})`);
+            if (!serverRes.ok) throw new Error(`無法取得伺服器節點 (Status: ${serverRes.status})`);
             
             const serverData = await serverRes.json();
             if (serverData.status !== 'ok' || !serverData.data || !serverData.data.servers.length) {
-                throw new Error('Gofile 伺服器目前暫時無法使用');
+                throw new Error('Gofile 雲端伺服器目前暫時無法連接');
             }
-            
-            // 取得分配到的伺服器名稱 (例如 store1, store3)
             const uploadServer = serverData.data.servers[0].name;
 
+            let fileLinksList = "";
+
+            // --- 動作 2：逐一打包上傳四種格式至根目錄 ---
             for (let fmt of formats) {
                 const gpxData = getGPXString(fmt.id, baseName);
                 const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
-                const formData = new FormData();
                 
+                const formData = new FormData();
                 const fileName = `${baseName}${fmt.suffix}_${uniqueStamp}.gpx`;
                 formData.append('file', blob, fileName);
-                
-                // 【關鍵】將你的 VIP 通行證放入上傳資料中
-                formData.append('token', myGofileToken);
+                formData.append('token', myGofileToken); 
 
-                // 2. 將檔案上傳至專屬伺服器
                 const uploadRes = await fetch(`https://${uploadServer}.gofile.io/contents/uploadfile`, { 
                     method: 'POST', 
                     body: formData 
                 });
                 
-                if (!uploadRes.ok) throw new Error(`上傳被拒 (Status: ${uploadRes.status})`);
-
+                if (!uploadRes.ok) throw new Error(`上傳被拒絕 (Status: ${uploadRes.status})`);
                 const uploadData = await uploadRes.json();
+                if (uploadData.status !== 'ok') throw new Error(`檔案上傳失敗 (${uploadData.status})`);
                 
-                if (uploadData.status === 'ok') {
-                    // 成功拿到分享網址
-                    linksText += `${fmt.name}：\n${uploadData.data.downloadPage}\n\n`;
-                } else {
-                    linksText += `${fmt.name}：上傳失敗 (${uploadData.status})\n\n`;
-                }
+                // 串接各檔案的單獨下載網址，方便轉發
+                fileLinksList += `📌 ${fmt.name} 格式：\n${uploadData.data.downloadPage}\n\n`;
                 
-                // 稍微延遲 1 秒，確保檔案處理完畢
+                // 稍微延遲 1 秒，防 API 速度過快爆量限制
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
-            urlInput.value = linksText.trim();
+            
+            // --- 動作 3：將產出的四個下載網址整合到文字框內 ---
+            let finalOutputText = `【${baseName}】安全路線檔案已成功打包！\n點擊下方專屬網址即可直接下載對應格式：\n\n${fileLinksList}（提示：檔案已安全同步儲存於上傳者的 Gofile 個人雲端帳號中）`;
+            
+            urlInput.value = finalOutputText;
+            hintDiv.innerText = `🎉 成功！4個檔案已直接儲存在您個人的 Gofile 根目錄中。`;
+            
         } catch (error) {
-            urlInput.value = `[錯誤]：${error.message}\n請檢查網路連線或稍後再試。`;
+            urlInput.value = `[錯誤]：${error.message}`;
+            hintDiv.innerText = "";
         } finally {
             shareBtn.disabled = false;
             shareBtn.innerHTML = '<span class="material-symbols-rounded">share</span> 重新產生連結';
@@ -796,7 +849,7 @@
         const input = document.getElementById("shareUrlInput");
         input.select();
         document.execCommand("copy");
-        alert("連結已複製！");
+        alert("通知文字與下載連結已複製！");
     }
 </script>
 </body>
