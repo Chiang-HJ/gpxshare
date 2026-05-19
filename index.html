@@ -316,10 +316,10 @@
 
         <div id="shareLinkContainer" style="display: none; margin-top: 15px;">
             <label style="font-weight:bold; color:var(--purple); margin-bottom:8px; display:flex; align-items:center;">
-                <span class="material-symbols-rounded">link</span> 給群友的下載連結：
+                <span class="material-symbols-rounded">link</span> 下載連結：
             </label>
             <textarea id="shareUrlInput" class="input-box" style="height: 180px; font-family: monospace; font-size: 0.85rem;" readonly></textarea>
-            <button class="btn btn-purple" style="margin-top: 12px;" onclick="copyShareLink()"><span class="material-symbols-rounded">content_copy</span> 一鍵複製到 LINE</button>
+            <button class="btn btn-purple" style="margin-top: 12px;" onclick="copyShareLink()"><span class="material-symbols-rounded">content_copy</span> 一鍵複製</button>
             <div id="shareHint" style="text-align:center; font-size:0.85rem; color:var(--danger); margin-top:8px; font-weight:500;"></div>
         </div>
     </div>
@@ -728,9 +728,9 @@
         let uniqueStamp = new Date().getTime();
 
         const formats = [
-            { id: 'joysticks', name: '標準協議', suffix: '_Joysticks' },
+            { id: 'joysticks', name: 'joystick', suffix: '_Joysticks' },
             { id: 'anyTo', name: 'AnyTo', suffix: '_AnyTo' },
-            { id: 'iTools', name: '魅影版', suffix: '_iTools' },
+            { id: 'iTools', name: '魅影', suffix: '_iTools' },
             { id: 'flashman', name: 'Flashman', suffix: '_Flashman' }
         ];
 
