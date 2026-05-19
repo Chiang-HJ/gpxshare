@@ -736,38 +736,49 @@
 
         let linksText = "";
         try {
+            // 【步驟 1】先向 Gofile 請求目前最佳的伺服器節點
+            const serverRes = await fetch('https://api.gofile.io/servers', { method: 'GET' });
+            if (!serverRes.ok) throw new Error(`無法取得伺服器 (Status: ${serverRes.status})`);
+            
+            const serverData = await serverRes.json();
+            if (serverData.status !== 'ok' || !serverData.data || !serverData.data.servers.length) {
+                throw new Error('Gofile 伺服器目前暫時無法使用');
+            }
+            
+            // 取得動態伺服器名稱 (例如 store1, store3 等)
+            const uploadServer = serverData.data.servers[0].name;
+
             for (let fmt of formats) {
                 const gpxData = getGPXString(fmt.id, baseName);
                 const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
                 const formData = new FormData();
                 
-                // 改用原生完美支援 CORS 的 Pixeldrain API
                 const fileName = `${baseName}${fmt.suffix}_${uniqueStamp}.gpx`;
                 formData.append('file', blob, fileName);
 
-                const response = await fetch('https://pixeldrain.com/api/file', { 
+                // 【步驟 2】將檔案上傳至分配到的專屬伺服器
+                const uploadRes = await fetch(`https://${uploadServer}.gofile.io/contents/uploadfile`, { 
                     method: 'POST', 
                     body: formData 
                 });
                 
-                if (!response.ok) throw new Error(`伺服器拒絕回應 (Status: ${response.status})`);
+                if (!uploadRes.ok) throw new Error(`上傳被拒 (Status: ${uploadRes.status})`);
 
-                const data = await response.json();
+                const uploadData = await uploadRes.json();
                 
-                if (data.success) {
-                    // Pixeldrain 回傳的 data.id 是檔案專屬 ID，直接組合成下載連結
-                    const downloadUrl = `https://pixeldrain.com/u/${data.id}`;
-                    linksText += `${fmt.name}：\n${downloadUrl}\n\n`;
+                if (uploadData.status === 'ok') {
+                    // Gofile 回傳的 downloadPage 是可以直接分享給群組的下載頁面
+                    linksText += `${fmt.name}：\n${uploadData.data.downloadPage}\n\n`;
                 } else {
-                    linksText += `${fmt.name}：上傳失敗\n\n`;
+                    linksText += `${fmt.name}：上傳失敗 (${uploadData.status})\n\n`;
                 }
                 
-                // 稍微延遲 1 秒，避免連續發送過快
+                // 稍微延遲 1 秒，確保檔案處理完畢
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
             urlInput.value = linksText.trim();
         } catch (error) {
-            urlInput.value = `[錯誤]：${error.message}\n請檢查網路連線或稍後再試。`;
+            urlInput.value = `[錯誤]：${error.message}\n如果持續失敗，可能是無痕模式的防追蹤功能阻擋了跨網站上傳，請嘗試使用一般視窗。`;
         } finally {
             shareBtn.disabled = false;
             shareBtn.innerHTML = '<span class="material-symbols-rounded">share</span> 重新產生連結';
