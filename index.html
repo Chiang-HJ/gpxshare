@@ -316,10 +316,10 @@
 
         <div id="shareLinkContainer" style="display: none; margin-top: 15px;">
             <label style="font-weight:bold; color:var(--purple); margin-bottom:8px; display:flex; align-items:center;">
-                <span class="material-symbols-rounded">link</span> 下載連結：
+                <span class="material-symbols-rounded">link</span> 給群友的下載連結：
             </label>
             <textarea id="shareUrlInput" class="input-box" style="height: 180px; font-family: monospace; font-size: 0.85rem;" readonly></textarea>
-            <button class="btn btn-purple" style="margin-top: 12px;" onclick="copyShareLink()"><span class="material-symbols-rounded">content_copy</span> 一鍵複製</button>
+            <button class="btn btn-purple" style="margin-top: 12px;" onclick="copyShareLink()"><span class="material-symbols-rounded">content_copy</span> 一鍵複製到 LINE</button>
             <div id="shareHint" style="text-align:center; font-size:0.85rem; color:var(--danger); margin-top:8px; font-weight:500;"></div>
         </div>
     </div>
@@ -728,15 +728,18 @@
         let uniqueStamp = new Date().getTime();
 
         const formats = [
-            { id: 'joysticks', name: 'joystick', suffix: '_Joysticks' },
+            { id: 'joysticks', name: 'joysticks', suffix: '_Joysticks' },
             { id: 'anyTo', name: 'AnyTo', suffix: '_AnyTo' },
-            { id: 'iTools', name: '魅影', suffix: '_iTools' },
+            { id: 'iTools', name: '魅影版', suffix: '_iTools' },
             { id: 'flashman', name: 'Flashman', suffix: '_Flashman' }
         ];
 
         let linksText = "";
         try {
-            // 【步驟 1】先向 Gofile 請求目前最佳的伺服器節點
+            // 【重要】請把下方引號內的亂碼，換成你剛剛複製的 Gofile API Token
+            const myGofileToken = 'oS4e5Nt0T9y7CXzitSjTtdgXOshypo0c'; 
+            
+            // 1. 先向 Gofile 請求目前最佳的伺服器節點 (Gofile 的特色機制)
             const serverRes = await fetch('https://api.gofile.io/servers', { method: 'GET' });
             if (!serverRes.ok) throw new Error(`無法取得伺服器 (Status: ${serverRes.status})`);
             
@@ -745,7 +748,7 @@
                 throw new Error('Gofile 伺服器目前暫時無法使用');
             }
             
-            // 取得動態伺服器名稱 (例如 store1, store3 等)
+            // 取得分配到的伺服器名稱 (例如 store1, store3)
             const uploadServer = serverData.data.servers[0].name;
 
             for (let fmt of formats) {
@@ -755,8 +758,11 @@
                 
                 const fileName = `${baseName}${fmt.suffix}_${uniqueStamp}.gpx`;
                 formData.append('file', blob, fileName);
+                
+                // 【關鍵】將你的 VIP 通行證放入上傳資料中
+                formData.append('token', myGofileToken);
 
-                // 【步驟 2】將檔案上傳至分配到的專屬伺服器
+                // 2. 將檔案上傳至專屬伺服器
                 const uploadRes = await fetch(`https://${uploadServer}.gofile.io/contents/uploadfile`, { 
                     method: 'POST', 
                     body: formData 
@@ -767,7 +773,7 @@
                 const uploadData = await uploadRes.json();
                 
                 if (uploadData.status === 'ok') {
-                    // Gofile 回傳的 downloadPage 是可以直接分享給群組的下載頁面
+                    // 成功拿到分享網址
                     linksText += `${fmt.name}：\n${uploadData.data.downloadPage}\n\n`;
                 } else {
                     linksText += `${fmt.name}：上傳失敗 (${uploadData.status})\n\n`;
@@ -778,7 +784,7 @@
             }
             urlInput.value = linksText.trim();
         } catch (error) {
-            urlInput.value = `[錯誤]：${error.message}\n如果持續失敗，可能是無痕模式的防追蹤功能阻擋了跨網站上傳，請嘗試使用一般視窗。`;
+            urlInput.value = `[錯誤]：${error.message}\n請檢查網路連線或稍後再試。`;
         } finally {
             shareBtn.disabled = false;
             shareBtn.innerHTML = '<span class="material-symbols-rounded">share</span> 重新產生連結';
