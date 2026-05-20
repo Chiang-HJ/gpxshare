@@ -349,7 +349,7 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-    // --- 網頁載入時：自動幫使用者讀取先前記住的 Token ---
+    //自動幫使用者讀取先前記住的 Token
     document.addEventListener("DOMContentLoaded", () => {
         const savedToken = localStorage.getItem("user_gofile_api_token");
         if (savedToken) {
@@ -357,7 +357,7 @@
         }
     });
 
-    // --- UI 互動邏輯 ---
+    // UI 
     function updateFileName() {
         const fileInput = document.getElementById('fileInput');
         const display = document.getElementById('fileNameDisplay');
@@ -754,11 +754,11 @@
         return gpxContent;
     }
 
-    // --- 核心上傳邏輯：移除資料夾建立，直接上傳至帳號根目錄 ---
+    //上傳至帳號
     async function generateShareLink() {
         if (generatedPoints.length === 0) return alert("請先生成路線！");
 
-        // 讀取使用者填寫的 Token
+        // 讀取Token
         const myGofileToken = document.getElementById('userGofileToken').value.trim();
         if (!myGofileToken) {
             alert("請先完成第 3 步驟，填寫您的 Gofile API Token！\n（您可以點擊教學中的連結去免費註冊取得）");
@@ -790,8 +790,7 @@
             { id: 'flashman', name: 'Flashman', suffix: '_Flashman' }
         ];
 
-        try {
-            // --- 動作 1：取得最佳上傳伺服器節點 ---
+    
             const serverRes = await fetch('https://api.gofile.io/servers', { method: 'GET' });
             if (!serverRes.ok) throw new Error(`無法取得伺服器節點 (Status: ${serverRes.status})`);
             
@@ -803,7 +802,7 @@
 
             let fileLinksList = "";
 
-            // --- 動作 2：逐一打包上傳四種格式至根目錄 ---
+            //打包上傳
             for (let fmt of formats) {
                 const gpxData = getGPXString(fmt.id, baseName);
                 const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
@@ -822,14 +821,14 @@
                 const uploadData = await uploadRes.json();
                 if (uploadData.status !== 'ok') throw new Error(`檔案上傳失敗 (${uploadData.status})`);
                 
-                // 串接各檔案的單獨下載網址，方便轉發
+                // 串接各檔案的單獨下載網址
                 fileLinksList += `📌 ${fmt.name} 格式：\n${uploadData.data.downloadPage}\n\n`;
                 
-                // 稍微延遲 1 秒，防 API 速度過快爆量限制
+                // 稍微延遲 1s
                 await new Promise(resolve => setTimeout(resolve, 1000));
             }
             
-            // --- 動作 3：將產出的四個下載網址整合到文字框內 ---
+            // 產出的四個下載網址整合
             let finalOutputText = `【${baseName}】安全路線檔案已成功打包！\n點擊下方專屬網址即可直接下載對應格式：\n\n${fileLinksList}（提示：檔案已安全同步儲存於上傳者的 Gofile 個人雲端帳號中）`;
             
             urlInput.value = finalOutputText;
