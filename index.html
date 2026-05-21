@@ -1,2214 +1,856 @@
-// ==========================================
-// 變數與防抖動設定
-// ==========================================
-let localFbTasks = {};
-let localFbPoolData = {}; 
-let unlockedFbTasks = JSON.parse(sessionStorage.getItem('unlockedFbTasks') || '[]');
-
-const renderForceBloomTasksDebounced = debounce(() => {
-    if(typeof window.renderForceBloomTasks === 'function') window.renderForceBloomTasks();
-}, 100);
-const renderFbPoolStatusDebounced = debounce(() => {
-    if(typeof window.renderFbPoolStatus === 'function') window.renderFbPoolStatus();
-}, 100);
-
-// ==========================================
-// 空間演算法與自動尋路引擎 (防小人智慧避障版)
-// ==========================================
-function getDistance(lat1, lon1, lat2, lon2) {
-    const R = 6378137; 
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-              Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    return R * c;
-}
-
-function getDistanceToSegment(latC, lonC, latA, lonA, latB, lonB) {
-    const R = 6371e3;
-    const lat1 = latA * Math.PI/180, lon1 = lonA * Math.PI/180;
-    const lat2 = latB * Math.PI/180, lon2 = lonB * Math.PI/180;
-    const lat3 = latC * Math.PI/180, lon3 = lonC * Math.PI/180;
-    const xB = (lon2 - lon1) * R * Math.cos(lat1), yB = (lat2 - lat1) * R;
-    const xC = (lon3 - lon1) * R * Math.cos(lat1), yC = (lat3 - lat1) * R;
-    const dot_w_v = xC * xB + yC * yB, dot_v_v = xB * xB + yB * yB;
-    if (dot_v_v === 0) return Math.sqrt(xC * xC + yC * yC);
-    let projX = 0, projY = 0;
-    if (dot_w_v > 0 && dot_v_v > dot_w_v) { const b = dot_w_v / dot_v_v; projX = b * xB; projY = b * yB; }
-    else if (dot_v_v <= dot_w_v) { projX = xB; projY = yB; }
-    const dx = xC - projX, dy = yC - projY;
-    return Math.sqrt(dx * dx + dy * dy);
-}
-
-function calculateBypass(latA, lonA, latB, lonB, latO, lonO, safeDist) {
-    const mPerLat = 111139, mPerLon = 111139 * Math.cos(latO * Math.PI/180);
-    let xA = (lonA - lonO) * mPerLon, yA = (latA - latO) * mPerLat;
-    let xB = (lonB - lonO) * mPerLon, yB = (latB - latO) * mPerLat;
-    let dx = xB - xA, dy = yB - yA, len2 = dx*dx + dy*dy;
-    if (len2 === 0) return {lat: latO, lng: lonO};
-    let t = Math.max(0, Math.min(1, ((-xA)*dx + (-yA)*dy) / len2));
-    let xP = xA + t*dx, yP = yA + t*dy, distP = Math.sqrt(xP*xP + yP*yP);
-    let nX, nY;
-    if (distP < 1) { let nLen = Math.sqrt(dx*dx+dy*dy); nX = -dy/nLen; nY = dx/nLen; } 
-    else { nX = xP/distP; nY = yP/distP; }
-    let vX = nX * safeDist, vY = nY * safeDist;
-    return { lat: latO + (vY / mPerLat), lng: lonO + (vX / mPerLon) };
-}
-
-window.getSecureOffsetCoord = function(coordString) {
-    if (!coordString || coordString.startsWith('VIRTUAL:') || coordString === '處理中') return coordString;
-    const [lat, lng] = coordString.split(',').map(Number);
-    const R = 30 + Math.random() * 10; 
-    const theta = Math.random() * 2 * Math.PI; 
-    const mPerLat = 111139; 
-    const mPerLon = 111139 * Math.cos(lat * Math.PI / 180); 
-    const offsetLat = lat + (R * Math.sin(theta) / mPerLat);
-    const offsetLng = lng + (R * Math.cos(theta) / mPerLon);
-    return `${offsetLat.toFixed(6)},${offsetLng.toFixed(6)}`;
-};
-
-// ==========================================
-// 核心引擎：防小人密集包絡路線生成
-// ==========================================
-function getBearing(lat1, lon1, lat2, lon2) {
-    const lat1_rad = lat1 * Math.PI / 180;
-    const lat2_rad = lat2 * Math.PI / 180;
-    const diff_lon = (lon2 - lon1) * Math.PI / 180;
-    const x = Math.sin(diff_lon) * Math.cos(lat2_rad);
-    const y = Math.cos(lat1_rad) * Math.sin(lat2_rad) - Math.sin(lat1_rad) * Math.cos(lat2_rad) * Math.cos(diff_lon);
-    let initial_bearing = Math.atan2(x, y);
-    return (initial_bearing * 180 / Math.PI + 360) % 360;
-}
-
-function getDestination(lat, lon, distance, bearing) {
-    const R = 6378137; 
-    const lat1 = lat * Math.PI / 180;
-    const lon1 = lon * Math.PI / 180;
-    const brng = bearing * Math.PI / 180;
-    const lat2 = Math.asin(Math.sin(lat1) * Math.cos(distance / R) + Math.cos(lat1) * Math.sin(distance / R) * Math.cos(brng));
-    const lon2 = lon1 + Math.atan2(Math.sin(brng) * Math.sin(distance / R) * Math.cos(lat1), Math.cos(distance / R) - Math.sin(lat1) * Math.sin(lat2));
-    return { lat: lat2 * 180 / Math.PI, lon: lon2 * 180 / Math.PI };
-}
-
-function getSegmentDistance(latA, lonA, latB, lonB, latC, lonC) {
-    const R = 6378137;
-    const latMid = (latA + latB) / 2 * Math.PI / 180;
-    const dxB = (lonB - lonA) * Math.PI / 180 * Math.cos(latMid) * R;
-    const dyB = (latB - latA) * Math.PI / 180 * R;
-    const dxC = (lonC - lonA) * Math.PI / 180 * Math.cos(latMid) * R;
-    const dyC = (latC - latA) * Math.PI / 180 * R;
-    const l2 = dxB * dxB + dyB * dyB;
-    if (l2 === 0) return getDistance(latA, lonA, latC, lonC); 
-    let t = (dxC * dxB + dyC * dyB) / l2;
-    t = Math.max(0, Math.min(1, t)); 
-    const projX = t * dxB;
-    const projY = t * dyB;
-    return Math.hypot(dxC - projX, dyC - projY);
-}
-
-function densifyRoute(points, minStep, maxStep) {
-    if (points.length < 2) return points;
-    const densePoints = [points[0]];
-    for (let i = 0; i < points.length - 1; i++) {
-        const p1 = points[i];
-        const p2 = points[i + 1];
-        const totalDist = getDistance(p1.lat, p1.lon, p2.lat, p2.lon);
-        if (totalDist > maxStep) {
-            const bearing = getBearing(p1.lat, p1.lon, p2.lat, p2.lon);
-            let currentDist = Math.random() * (maxStep - minStep) + minStep;
-            while (currentDist < totalDist) {
-                densePoints.push(getDestination(p1.lat, p1.lon, currentDist, bearing));
-                currentDist += Math.random() * (maxStep - minStep) + minStep;
-            }
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>GPX 智慧島嶼防小人路線產生器</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,1,0" rel="stylesheet" />
+    <style>
+        :root {
+            --primary: #4A90E2;
+            --success: #2ECC71;
+            --danger: #E74C3C;
+            --warning: #F39C12;
+            --purple: #9B59B6;
+            --dark: #2C3E50;
+            --gray: #5D6D7E;
         }
-        densePoints.push(p2);
-    }
-    return densePoints;
-}
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Microsoft JhengHei", "PingFang TC", sans-serif;
+            margin: 0;
+            padding: 20px 15px;
+            background: linear-gradient(135deg, #e0c3fc 0%, #8ec5fc 100%);
+            background-attachment: fixed;
+            color: var(--dark);
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+        }
 
-function generateSmartRoute(originalPoints) {
+        .material-symbols-rounded {
+            vertical-align: middle;
+            font-size: 1.25rem;
+            margin-right: 6px;
+        }
+
+        .app-header {
+            text-align: center;
+            margin-bottom: 25px;
+        }
+        .app-header h1 {
+            margin: 0;
+            font-size: 1.6rem;
+            color: #1A252F;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-shadow: 0 2px 10px rgba(255,255,255,0.5);
+        }
+        .app-header p {
+            margin: 5px 0 0 0;
+            font-size: 0.9rem;
+            color: #34495E;
+            font-weight: 500;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.45);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.6);
+            border-radius: 20px;
+            padding: 22px;
+            margin-bottom: 18px;
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.1);
+        }
+
+        .card-title {
+            font-size: 1.15rem;
+            font-weight: bold;
+            color: var(--dark);
+            margin-top: 0;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.5);
+            padding-bottom: 10px;
+        }
+
+        .file-upload-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .file-upload-btn {
+            background: rgba(255, 255, 255, 0.6);
+            color: var(--primary);
+            border: 1px dashed var(--primary);
+            padding: 14px;
+            border-radius: 12px;
+            text-align: center;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(5px);
+        }
+        .file-upload-btn:active { background: rgba(255, 255, 255, 0.8); }
+        .file-name-display { font-size: 0.85rem; color: var(--success); font-weight: bold; text-align: center; }
+        input[type="file"] { display: none; }
+
+        .divider {
+            text-align: center;
+            font-size: 0.85rem;
+            color: var(--gray);
+            position: relative;
+            margin: 18px 0;
+        }
+        .divider::before, .divider::after {
+            content: ""; position: absolute; top: 50%; width: 35%; height: 1px; background: rgba(0,0,0,0.1);
+        }
+        .divider::before { left: 0; }
+        .divider::after { right: 0; }
+
+        .input-box {
+            width: 100%; padding: 12px; 
+            border: 1px solid rgba(255, 255, 255, 0.8);
+            border-radius: 12px; box-sizing: border-box; font-size: 0.95rem;
+            background: rgba(255, 255, 255, 0.5); 
+            transition: all 0.3s;
+            color: var(--dark);
+            backdrop-filter: blur(5px);
+        }
+        .input-box:focus { 
+            border-color: var(--primary); 
+            outline: none; 
+            background: rgba(255, 255, 255, 0.8); 
+            box-shadow: 0 0 10px rgba(74,144,226,0.2);
+        }
+        textarea.input-box { height: 90px; resize: vertical; }
+        select.input-box { -webkit-appearance: none; appearance: none; cursor: pointer; }
+
+        .toggle-row {
+            display: flex; justify-content: space-between; align-items: center;
+            background: rgba(255, 255, 255, 0.5); padding: 14px 15px; border-radius: 12px; margin-bottom: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.6);
+        }
+        .toggle-label { font-weight: bold; font-size: 0.95rem; color: var(--dark); display:flex; align-items:center; }
+        .switch { position: relative; display: inline-block; width: 46px; height: 26px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+            background-color: rgba(0,0,0,0.15); transition: .4s; border-radius: 26px;
+        }
+        .slider:before {
+            position: absolute; content: ""; height: 20px; width: 20px; left: 3px; bottom: 3px;
+            background-color: white; transition: .4s; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        input:checked + .slider { background-color: var(--success); }
+        input:checked + .slider:before { transform: translateX(20px); }
+
+        .step-settings {
+            display: flex; align-items: center; gap: 8px; margin-top: 10px;
+            background: rgba(255, 255, 255, 0.4); padding: 12px; border-radius: 12px; 
+            border: 1px solid rgba(255, 255, 255, 0.6);
+        }
+        .step-input { 
+            width: 60px; padding: 8px; text-align: center; 
+            border: 1px solid rgba(255, 255, 255, 0.8); border-radius: 8px; 
+            background: rgba(255, 255, 255, 0.6);
+        }
+
+        .btn {
+            width: 100%; padding: 16px; border: 1px solid rgba(255,255,255,0.4); border-radius: 14px;
+            font-size: 1.05rem; font-weight: bold; color: white; cursor: pointer;
+            transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 6px;
+            margin-bottom: 12px; box-sizing: border-box; backdrop-filter: blur(4px);
+        }
+        .btn:active { transform: scale(0.98); }
+        .btn-primary { background: rgba(74, 144, 226, 0.85); box-shadow: 0 4px 15px rgba(74, 144, 226, 0.3); }
+        .btn-success { background: rgba(46, 204, 113, 0.85); box-shadow: 0 4px 15px rgba(46, 204, 113, 0.3); }
+        .btn-purple { background: rgba(155, 89, 182, 0.85); box-shadow: 0 4px 15px rgba(155, 89, 182, 0.3); }
+        .btn-warning { background: rgba(243, 156, 18, 0.85); box-shadow: 0 4px 15px rgba(243, 156, 18, 0.3); }
+        .btn-ghost { background: transparent; color: var(--danger); font-size: 0.9rem; padding: 8px; border: none; margin-bottom: 0; box-shadow: none; font-weight: 500; display:inline-flex;}
+        
+        .action-row { display: flex; gap: 12px; margin-bottom: 12px;}
+        .action-row .btn { margin-bottom: 0; flex: 1; font-size: 0.95rem; padding: 14px 10px;}
+
+        .map-modal {
+            display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background-color: rgba(0, 0, 0, 0.75); z-index: 9999; flex-direction: column;
+            align-items: center; justify-content: center; backdrop-filter: blur(8px);
+        }
+        .map-content { width: 92%; height: 85%; background: white; border-radius: 20px; position: relative; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.4); }
+        #map { width: 100%; height: 100%; }
+        .close-map-btn { position: absolute; top: 15px; right: 15px; z-index: 10000; background: rgba(231,76,60,0.95); color: white; border: none; padding: 10px 20px; border-radius: 20px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+
+        .hint-text { font-size: 0.8rem; color: var(--gray); margin-top: 6px; line-height: 1.4; font-weight: normal;}
+        
+        .tutorial-list { margin: 5px 0 12px 0; padding-left: 20px; font-size: 0.85rem; color: #34495e; line-height: 1.5; }
+        .tutorial-list a { color: var(--primary); font-weight: bold; text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="app-header">
+        <h1><span class="material-symbols-rounded">location_on</span>智慧島嶼防小人路線</h1>
+        <p>一鍵轉換安全格式，自動隱藏真實座標</p>
+    </div>
+
+    <div class="card">
+        <h3 class="card-title"><span class="material-symbols-rounded">download</span> 1. 提供路線來源</h3>
+        
+        <div class="file-upload-wrapper">
+            <label for="fileInput" class="file-upload-btn">
+                <span class="material-symbols-rounded">folder_open</span> 點此選擇 GPX 檔案
+            </label>
+            <input type="file" id="fileInput" accept=".gpx" onchange="updateFileName()">
+            <div id="fileNameDisplay" class="file-name-display" style="display: none;">已選擇: </div>
+        </div>
+
+        <div class="divider">或直接貼上座標</div>
+
+        <textarea id="coordInput" class="input-box" placeholder="在此貼上經緯度 (緯度,經度)&#10;22.639, 120.302&#10;22.640, 120.305"></textarea>
+        
+        <div style="text-align: right; margin-top: 8px;">
+            <button class="btn-ghost" onclick="clearInput()"><span class="material-symbols-rounded">delete</span> 清除重填</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3 class="card-title"><span class="material-symbols-rounded">settings</span> 2. 轉換設定</h3>
+
+        <div style="margin-bottom: 18px;">
+            <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center;">
+                <span class="material-symbols-rounded">route</span> 路線生成模式
+            </label>
+            <select id="generationMode" class="input-box" style="cursor: pointer; font-weight: 500;">
+                <option value="astar">最短路徑模式</option>
+                <option value="envelope">傳統包絡線模式</option>
+            </select>
+        </div>
+
+        <div style="margin-bottom: 18px;">
+            <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center;">
+                <span class="material-symbols-rounded">speed</span> 預測完成時間 (設定速度)
+            </label>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <input type="number" id="speedInput" class="input-box" value="15" min="0.1" step="0.1" style="flex:1;">
+                <select id="speedUnit" class="input-box" style="flex:1; cursor: pointer;">
+                    <option value="kmh">公里/小時 (km/h)</option>
+                    <option value="ms">公尺/秒 (m/s)</option>
+                    <option value="mmin">公尺/分鐘 (m/min)</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="toggle-row">
+            <div>
+                <div class="toggle-label"><span class="material-symbols-rounded">directions_walk</span> 啟用模擬步行插點</div>
+                <div class="hint-text">在長直線中加入隨機碎步。</div>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="densifyCheck" checked onchange="toggleDensifySettings()">
+                <span class="slider"></span>
+            </label>
+        </div>
+
+        <div id="stepSettings" class="step-settings">
+            <span style="font-size:0.9rem; font-weight:bold; color:var(--dark);">隨機步伐：</span>
+            <input type="number" id="minStep" class="step-input" value="5" min="1">
+            <span style="color:var(--gray);">~</span>
+            <input type="number" id="maxStep" class="step-input" value="10" min="1">
+            <span style="color:var(--gray); font-size:0.9rem;">公尺</span>
+        </div>
+
+        <div style="margin-top: 18px;">
+            <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center;">
+                <span class="material-symbols-rounded">label</span> 路線自訂名稱
+            </label>
+            <input type="text" id="customFileName" class="input-box" placeholder="例如：防小人作戰路線">
+        </div>
+    </div>
+
+    <div class="card" style="border: 1px solid rgba(155, 89, 182, 0.4);">
+        <h3 class="card-title" style="color: var(--purple); border-bottom-color: rgba(155, 89, 182, 0.3);">
+            <span class="material-symbols-rounded">cloud_queue</span> 3. Gofile 個人雲端設定
+        </h3>
+        <p class="hint-text" style="color: var(--dark); font-weight: 500; font-size: 0.9rem; margin-bottom: 5px;">
+            分享功能需要使用您個人的 Gofile 空間，請依照以下步驟操作：
+        </p>
+        <ol class="tutorial-list">
+            <li>前往 <a href="https://gofile.io/" target="_blank">Gofile 官網 (點此開啟)</a> 免費註冊並登入。</li>
+            <li>點擊網頁左上角的 <b>「Add Acount」</b> 進行註冊。</li>
+            <li>註冊成功後點選左上角帳戶名選擇 <b>「My Profile」</b> 。</li>
+            <li>上滑畫面，並複製畫面中的 <b>「API token」</b> 貼到下方欄位（系統會自動幫您記住）。</li>
+        </ol>
+
+        <div>
+            <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center;">
+                <span class="material-symbols-rounded">vpn_key</span> 您的 Gofile API Token
+            </label>
+            <input type="password" id="userGofileToken" class="input-box" placeholder="請在此貼上您的 API Token (例如：oS4e5...)">
+        </div>
+    </div>
+
+    <button class="btn btn-primary" onclick="processData()" id="generateMainBtn" style="padding: 18px; font-size: 1.15rem;">
+        <span class="material-symbols-rounded">rocket_launch</span> 立即生成路線
+    </button>
+
+    <div class="card" id="resultCard" style="display: none; border: 2px solid rgba(46, 204, 113, 0.6);">
+        <h3 class="card-title" style="color: #27ae60;"><span class="material-symbols-rounded">check_circle</span> 4. 生成成功！</h3>
+        
+        <div id="routeStats" style="background: rgba(255, 255, 255, 0.6); padding: 15px; border-radius: 12px; margin-bottom: 15px; border: 1px solid rgba(255, 255, 255, 0.8); display: flex; flex-direction: column; gap: 10px;">
+            <div style="display: flex; align-items: center; font-size: 0.95rem; color: var(--dark);">
+                <span class="material-symbols-rounded" style="color: var(--primary);">straighten</span>
+                <span style="font-weight: bold; width: 80px;">總距離：</span>
+                <span id="displayDistance" style="font-weight: bold; color: var(--primary);">0 公尺</span>
+            </div>
+            <div style="display: flex; align-items: center; font-size: 0.95rem; color: var(--dark);">
+                <span class="material-symbols-rounded" style="color: var(--warning);">timer</span>
+                <span style="font-weight: bold; width: 80px;">預估時間：</span>
+                <span id="displayTime" style="font-weight: bold; color: var(--warning);">0 分 0 秒</span>
+            </div>
+        </div>
+
+        <button class="btn btn-warning" onclick="openMap()"><span class="material-symbols-rounded">map</span> 預覽繞路地圖</button>
+        
+        <div class="action-row">
+            <button class="btn btn-success" onclick="exportGPX('joysticks')"><span class="material-symbols-rounded">save_alt</span> 存入本機</button>
+            <button class="btn btn-purple" id="generateLinkBtn" onclick="generateShareLink()"><span class="material-symbols-rounded">share</span> 產生分享網址</button>
+        </div>
+
+        <div id="shareLinkContainer" style="display: none; margin-top: 15px;">
+            <label style="font-weight:bold; color:var(--purple); margin-bottom:8px; display:flex; align-items:center;">
+                <span class="material-symbols-rounded">link</span> 上傳成果與通知文字：
+            </label>
+            <textarea id="shareUrlInput" class="input-box" style="height: 140px; font-family: monospace; font-size: 0.85rem;" readonly></textarea>
+            <button class="btn btn-purple" style="margin-top: 12px;" onclick="copyShareLink()"><span class="material-symbols-rounded">content_copy</span> 一鍵複製文字</button>
+            <div id="shareHint" style="text-align:center; font-size:0.85rem; color:var(--success); margin-top:8px; font-weight:500;"></div>
+        </div>
+    </div>
+</div>
+
+<div class="map-modal" id="mapModal">
+    <div class="map-content">
+        <button class="close-map-btn" onclick="closeMap()">關閉</button>
+        <div id="map"></div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    // --- 網頁載入時：自動幫使用者讀取先前記住的 Token ---
+    document.addEventListener("DOMContentLoaded", () => {
+        const savedToken = localStorage.getItem("user_gofile_api_token");
+        if (savedToken) {
+            document.getElementById("userGofileToken").value = savedToken;
+        }
+    });
+
+    // --- UI 互動邏輯 ---
+    function updateFileName() {
+        const fileInput = document.getElementById('fileInput');
+        const display = document.getElementById('fileNameDisplay');
+        if (fileInput.files.length > 0) {
+            display.innerText = "已選擇: " + fileInput.files[0].name;
+            display.style.display = "block";
+        } else {
+            display.style.display = "none";
+        }
+    }
+
+    function toggleDensifySettings() {
+        const isChecked = document.getElementById('densifyCheck').checked;
+        document.getElementById('stepSettings').style.display = isChecked ? 'flex' : 'none';
+    }
+
+    function clearInput() {
+        document.getElementById('fileInput').value = "";
+        document.getElementById('fileNameDisplay').style.display = "none";
+        document.getElementById('coordInput').value = "";
+        document.getElementById('customFileName').value = "";
+        
+        document.getElementById('resultCard').style.display = 'none';
+        document.getElementById('shareLinkContainer').style.display = 'none';
+        
+        originalPoints = [];
+        generatedPoints = [];
+        if(originalLayerGroup) originalLayerGroup.clearLayers();
+        if(generatedLayerGroup) generatedLayerGroup.clearLayers();
+    }
+
+    let map, originalLayerGroup, generatedLayerGroup;
+    try {
+        map = L.map('map').setView([22.645, 120.315], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
+        originalLayerGroup = L.layerGroup().addTo(map);
+        generatedLayerGroup = L.layerGroup().addTo(map);
+    } catch(e) { console.error("地圖載入失敗", e); }
+
+    let originalPoints = [];
     let generatedPoints = [];
-    const n = originalPoints.length;
-    if (n === 0) return generatedPoints;
 
-    const clusters = [];
-    const visited = new Set();
-    for (let i = 0; i < n; i++) {
-        if (visited.has(i)) continue;
-        const cluster = [];
-        const queue = [i];
-        visited.add(i);
-        while (queue.length > 0) {
-            const curr = queue.shift();
-            cluster.push(curr);
-            for (let j = 0; j < n; j++) {
-                if (!visited.has(j) && getDistance(originalPoints[curr].lat, originalPoints[curr].lon, originalPoints[j].lat, originalPoints[j].lon) <= 90) {
-                    visited.add(j);
-                    queue.push(j);
-                }
+    function openMap() {
+        document.getElementById('mapModal').style.display = 'flex';
+        setTimeout(() => {
+            if(map) {
+                map.invalidateSize();
+                const origLatLngs = originalPoints.map(p => [p.lat, p.lon]);
+                const genLatLngs = generatedPoints.map(p => [p.lat, p.lon]);
+                if (origLatLngs.length > 0) map.fitBounds(L.latLngBounds(origLatLngs.concat(genLatLngs)), { padding: [30, 30] });
             }
-        }
-        clusters.push(cluster);
+        }, 100); 
     }
 
-    const pointCentroids = new Array(n);
-    for (let cluster of clusters) {
-        let sumLat = 0, sumLon = 0;
-        for (let idx of cluster) {
-            sumLat += originalPoints[idx].lat;
-            sumLon += originalPoints[idx].lon;
-        }
-        const centroid = { lat: sumLat / cluster.length, lon: sumLon / cluster.length };
-        for (let idx of cluster) {
-            pointCentroids[idx] = centroid;
+    function closeMap() { document.getElementById('mapModal').style.display = 'none'; }
+
+    function getBearing(lat1, lon1, lat2, lon2) {
+        const lat1_rad = lat1 * Math.PI / 180, lat2_rad = lat2 * Math.PI / 180, diff_lon = (lon2 - lon1) * Math.PI / 180;
+        const x = Math.sin(diff_lon) * Math.cos(lat2_rad);
+        const y = Math.cos(lat1_rad) * Math.sin(lat2_rad) - Math.sin(lat1_rad) * Math.cos(lat2_rad) * Math.cos(diff_lon);
+        return (Math.atan2(x, y) * 180 / Math.PI + 360) % 360;
+    }
+
+    function getDestination(lat, lon, distance, bearing) {
+        const R = 6378137, lat1 = lat * Math.PI / 180, lon1 = lon * Math.PI / 180, brng = bearing * Math.PI / 180;
+        const lat2 = Math.asin(Math.sin(lat1) * Math.cos(distance / R) + Math.cos(lat1) * Math.sin(distance / R) * Math.cos(brng));
+        const lon2 = lon1 + Math.atan2(Math.sin(brng) * Math.sin(distance / R) * Math.cos(lat1), Math.cos(distance / R) - Math.sin(lat1) * Math.sin(lat2));
+        return { lat: lat2 * 180 / Math.PI, lon: lon2 * 180 / Math.PI };
+    }
+
+    function getDistance(lat1, lon1, lat2, lon2) {
+        const R = 6378137, dLat = (lat2 - lat1) * Math.PI / 180, dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    function getSegmentDistance(latA, lonA, latB, lonB, latC, lonC) {
+        const R = 6378137, latMid = (latA + latB) / 2 * Math.PI / 180;
+        const dxB = (lonB - lonA) * Math.PI / 180 * Math.cos(latMid) * R, dyB = (latB - latA) * Math.PI / 180 * R;
+        const dxC = (lonC - lonA) * Math.PI / 180 * Math.cos(latMid) * R, dyC = (latC - latA) * Math.PI / 180 * R;
+        const l2 = dxB * dxB + dyB * dyB; if (l2 === 0) return getDistance(latA, lonA, latC, lonC); 
+        let t = Math.max(0, Math.min(1, (dxC * dxB + dyC * dyB) / l2)); 
+        return Math.hypot(dxC - t * dxB, dyC - t * dyB);
+    }
+
+    function parseGPX(xmlText) {
+        const xmlDoc = new DOMParser().parseFromString(xmlText, "text/xml");
+        for (let type of ['trkpt', 'rtept', 'wpt']) {
+            const nodes = xmlDoc.getElementsByTagName(type);
+            if (nodes.length > 0) {
+                for (let i = 0; i < nodes.length; i++) {
+                    const lat = parseFloat(nodes[i].getAttribute('lat')), lon = parseFloat(nodes[i].getAttribute('lon'));
+                    if (!isNaN(lat) && !isNaN(lon)) originalPoints.push({ lat, lon });
+                } break;
+            }
         }
     }
 
-    const validCircles = []; 
-    for (let i = 0; i < n; i++) {
-        const center = originalPoints[i];
-        const coastalPoints = [];
-        const centroid = pointCentroids[i];
-        const distToCentroid = getDistance(centroid.lat, centroid.lon, center.lat, center.lon);
-        const outwardAngle = distToCentroid < 1 ? 0 : getBearing(centroid.lat, centroid.lon, center.lat, center.lon);
-        
-        for (let a = 0; a < 360; a += 15) { 
-            if (distToCentroid >= 1) {
-                let diff = Math.abs((a - outwardAngle + 360) % 360);
-                if (diff > 180) diff = 360 - diff;
-                if (diff > 90) continue; 
+    function parseTextCoords(text) {
+        text.split('\n').forEach(line => {
+            const parts = line.split(/[,\s\t]+/).filter(Boolean);
+            if (parts.length >= 2) {
+                const lat = parseFloat(parts[0]), lon = parseFloat(parts[1]);
+                if (!isNaN(lat) && !isNaN(lon)) originalPoints.push({ lat, lon });
             }
-            const currentRandomDist = Math.random() * (50 - 45) + 45;
-            const pt = getDestination(center.lat, center.lon, currentRandomDist, a);
-            pt.angle = a;
-            
-            let isCoastal = true;
-            for (let k = 0; k < n; k++) {
-                if (k === i) continue;
-                if (getDistance(pt.lat, pt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) {
-                    isCoastal = false; break;
-                }
-            }
-            if (isCoastal) coastalPoints.push(pt);
-        }
-        if (coastalPoints.length > 0) validCircles.push({ index: i, center: center, points: coastalPoints });
+        });
     }
 
-    const mCount = validCircles.length;
-    if (mCount === 0) {
-        generatedPoints.push(getDestination(originalPoints[0].lat, originalPoints[0].lon, 60, 0));
-    } else {
-        const connections = []; 
-        for (let m = 0; m < mCount - 1; m++) {
-            const circleA = validCircles[m];
-            const circleB = validCircles[m + 1];
-            let bestDist = Infinity, bestPair = null, backupPair = null, maxClearance = -Infinity;
-
-            for (let ptA of circleA.points) {
-                for (let ptB of circleB.points) {
-                    let isSafe = true;
-                    let minClearanceForLine = Infinity;
-                    for (let k = 0; k < n; k++) {
-                        const centerK = originalPoints[k];
-                        const clearK = getSegmentDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon, centerK.lat, centerK.lon);
-                        minClearanceForLine = Math.min(minClearanceForLine, clearK);
-                        if (clearK <= 40) isSafe = false;
-                    }
-                    if (minClearanceForLine > maxClearance) {
-                        maxClearance = minClearanceForLine;
-                        backupPair = { exit: ptA, entry: ptB };
-                    }
-                    if (isSafe) {
-                        const dist = getDistance(ptA.lat, ptA.lon, ptB.lat, ptB.lon);
-                        if (dist < bestDist) { bestDist = dist; bestPair = { exit: ptA, entry: ptB }; }
-                    }
+    function densifyRoute(points, minStep, maxStep) {
+        if (points.length < 2) return points;
+        const densePoints = [points[0]];
+        for (let i = 0; i < points.length - 1; i++) {
+            const p1 = points[i], p2 = points[i + 1];
+            const totalDist = getDistance(p1.lat, p1.lon, p2.lat, p2.lon);
+            if (totalDist > maxStep) {
+                const bearing = getBearing(p1.lat, p1.lon, p2.lat, p2.lon);
+                let currentDist = Math.random() * (maxStep - minStep) + minStep;
+                while (currentDist < totalDist) {
+                    densePoints.push(getDestination(p1.lat, p1.lon, currentDist, bearing));
+                    currentDist += Math.random() * (maxStep - minStep) + minStep;
                 }
-            }
-            if (!bestPair) bestPair = backupPair;
-            if (bestPair) connections.push(bestPair);
-        }
+            } densePoints.push(p2);
+        } return densePoints;
+    }
 
-        if (mCount === 1) {
-            generatedPoints.push(validCircles[0].points[0]);
+    function generateSmartPoints() {
+        const mode = document.getElementById('generationMode').value;
+        if (mode === 'astar') {
+            generateAStarPoints();
         } else {
-            for (let m = 0; m < mCount; m++) {
-                const circle = validCircles[m];
-                const center = circle.center;
-                if (m === 0) {
-                    if (connections[0]) generatedPoints.push(connections[0].exit);
-                } else if (m === mCount - 1) {
-                    if (connections[m - 1]) generatedPoints.push(connections[m - 1].entry);
-                } else {
-                    if (connections[m - 1] && connections[m]) {
-                        const ptIn = connections[m - 1].entry;
-                        const ptOut = connections[m].exit;
-                        generatedPoints.push(ptIn);
-                        let diff = (ptOut.angle - ptIn.angle + 360) % 360;
-                        let stepDir = 1; 
-                        if (diff > 180) { diff = 360 - diff; stepDir = -1; }
-                        
-                        if (diff > 0) {
-                            const steps = Math.floor(diff / 15);
-                            for (let s = 1; s < steps; s++) { 
-                                const currentAng = (ptIn.angle + s * 15 * stepDir + 360) % 360;
-                                const arcDist = Math.random() * (50 - 45) + 45;
-                                const arcPt = getDestination(center.lat, center.lon, arcDist, currentAng);
-                                let arcSafe = true;
-                                for (let k = 0; k < n; k++) {
-                                    if (k === circle.index) continue;
-                                    if (getDistance(arcPt.lat, arcPt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) {
-                                        arcSafe = false; break;
-                                    }
-                                }
-                                if(arcSafe) generatedPoints.push(arcPt);
-                            }
-                        }
-                        generatedPoints.push(ptOut);
+            generateEnvelopePoints();
+        }
+    }
+
+    function generateAStarPoints() {
+        generatedPoints = []; const n = originalPoints.length; if (n === 0) return;
+        let allSafeNodes = [];
+        let circleNodes = Array(n).fill(null).map(() => []);
+        let nodeId = 0;
+        for (let i = 0; i < n; i++) {
+            let center = originalPoints[i];
+            for (let a = 0; a < 360; a += 22.5) { 
+                let pt = getDestination(center.lat, center.lon, 45, a);
+                let isSafe = true;
+                for (let k = 0; k < n; k++) {
+                    if (k === i) continue;
+                    if (getDistance(pt.lat, pt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { isSafe = false; break; }
+                }
+                if (isSafe) {
+                    let node = { id: nodeId++, lat: pt.lat, lon: pt.lon, circleIdx: i, angle: a };
+                    allSafeNodes.push(node);
+                    circleNodes[i].push(node);
+                }
+            }
+        }
+        let adj = Array(allSafeNodes.length).fill(null).map(() => []);
+        for (let i = 0; i < allSafeNodes.length; i++) {
+            for (let j = i + 1; j < allSafeNodes.length; j++) {
+                let n1 = allSafeNodes[i], n2 = allSafeNodes[j], isSafePath = true;
+                for (let k = 0; k < n; k++) {
+                    if (getSegmentDistance(n1.lat, n1.lon, n2.lat, n2.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { isSafePath = false; break; }
+                }
+                if (isSafePath) {
+                    let d = getDistance(n1.lat, n1.lon, n2.lat, n2.lon);
+                    adj[i].push({ to: j, weight: d }); adj[j].push({ to: i, weight: d });
+                }
+            }
+        }
+        function findShortestPath(startNodeId, targetCircleIdx) {
+            let dist = Array(allSafeNodes.length).fill(Infinity), prev = Array(allSafeNodes.length).fill(-1);
+            dist[startNodeId] = 0;
+            let pq = [{ id: startNodeId, d: 0 }];
+            while (pq.length > 0) {
+                pq.sort((a, b) => a.d - b.d);
+                let curr = pq.shift();
+                if (allSafeNodes[curr.id].circleIdx === targetCircleIdx) {
+                    let path = [];
+                    for(let at = curr.id; at !== -1; at = prev[at]) path.unshift(allSafeNodes[at]);
+                    return { path, endNodeId: curr.id };
+                }
+                for (let edge of adj[curr.id]) {
+                    if (curr.d + edge.weight < dist[edge.to]) {
+                        dist[edge.to] = curr.d + edge.weight; prev[edge.to] = curr.id;
+                        pq.push({ id: edge.to, d: dist[edge.to] });
                     }
                 }
             }
+            return null;
         }
-    }
-    return generatedPoints;
-}
-
-// 最高管理員專屬功能
-window.resetAllPoolStatus = async function() {
-    if(confirm("測試專用：確定要將【所有點位庫】的座標狀態重置為「空閒」嗎？")) {
-        let snap = await fbPoolRef.once('value');
-        let pools = snap.val();
-        if(!pools) return alert("目前沒有任何點位庫。");
-        let updates = {};
-        for(let zone in pools) {
-            let coords = pools[zone].coords;
-            if(coords) {
-                for(let i=0; i<coords.length; i++) {
-                    updates[`${zone}/coords/${i}/status`] = 0;
-                    updates[`${zone}/coords/${i}/endTime`] = null;
-                    updates[`${zone}/coords/${i}/assignedTo`] = null;
-                }
+        let currentStartNode = -1;
+        if (circleNodes[0].length > 0) {
+            currentStartNode = circleNodes[0][0].id;
+            generatedPoints.push(allSafeNodes[currentStartNode]);
+        }
+        for (let targetIdx = 1; targetIdx < n; targetIdx++) {
+            if (circleNodes[targetIdx].length === 0) continue; 
+            if (currentStartNode === -1) {
+                currentStartNode = circleNodes[targetIdx][0].id;
+                generatedPoints.push(allSafeNodes[currentStartNode]);
+                continue;
             }
-        }
-        fbPoolRef.update(updates).then(() => alert("全庫重置成功！")).catch(e => alert("重置失敗：" + e.message));
-    }
-};
-
-window.batchUpdateCoordStatus = async function() {
-    let rawText = document.getElementById('batchStatusCoords').value.trim();
-    let selectedValue = document.getElementById('batchStatusSelect').value;
-    if(!rawText) return alert("請貼上要變更狀態的座標！");
-    
-    let hourValue = 0;
-    if (selectedValue === "custom") {
-        hourValue = parseFloat(document.getElementById('batchCustomHours').value);
-        if (isNaN(hourValue) || hourValue < 0) return alert("請輸入有效的小時數！");
-    } else {
-        hourValue = parseFloat(selectedValue);
-    }
-
-    let extractedCoords = [];
-    const generalRegex = /[-+]?([1-8]?\d(\.\d+)?|90(\.0+)?),\s*[-+]?(180(\.0+)?|((1[0-7]\d)|([1-9]?\d))(\.\d+)?)/g;
-    let genMatch = rawText.match(generalRegex);
-    if (genMatch) genMatch.forEach(m => extractedCoords.push(m.replace(/\s/g, '')));
-    extractedCoords = [...new Set(extractedCoords)];
-    
-    if(extractedCoords.length === 0) return alert("找不到有效座標格式！");
-    let actionText = hourValue === 0 ? '空閒' : `冷卻 ${hourValue} 小時`;
-    if(!confirm(`確定將這 ${extractedCoords.length} 個座標變更為「${actionText}」嗎？`)) return;
-
-    let poolSnap = await fbPoolRef.once('value');
-    let pools = poolSnap.val();
-    if(!pools) return alert("點位庫為空！");
-
-    let updates = {};
-    let matchCount = 0;
-    let syncedNow = getSyncedTime();
-
-    for(let z in pools) {
-        let coords = pools[z].coords;
-        if(!coords) continue;
-        for(let i=0; i<coords.length; i++) {
-            if(extractedCoords.includes(coords[i].coordString)) {
-                matchCount++;
-                updates[`${z}/coords/${i}/status`] = hourValue === 0 ? 0 : 2;
-                if(hourValue === 0) {
-                    updates[`${z}/coords/${i}/endTime`] = null;
-                    updates[`${z}/coords/${i}/assignedTo`] = null;
-                } else {
-                    updates[`${z}/coords/${i}/endTime`] = syncedNow + (hourValue * 3600000);
-                }
+            let result = findShortestPath(currentStartNode, targetIdx);
+            if (result) {
+                for (let i = 1; i < result.path.length; i++) generatedPoints.push(result.path[i]);
+                currentStartNode = result.endNodeId;
+            } else {
+                let backupEnd = circleNodes[targetIdx][0];
+                generatedPoints.push(backupEnd);
+                currentStartNode = backupEnd.id;
             }
         }
     }
-    if(matchCount === 0) return alert("資料庫中找不到您輸入的座標！");
-    await fbPoolRef.update(updates);
-    alert(`成功更新 ${matchCount} 個座標的狀態！`);
-    document.getElementById('batchStatusCoords').value = '';
-};
 
-window.importForceBloomCoords = function() {
-    if(!isEditMode) return;
-    const zoneName = document.getElementById('fbPoolZoneName').value.trim();
-    const rawText = document.getElementById('fbPoolRawCoords').value.trim();
-    const fileInput = document.getElementById('fbPoolFileInput');
-    if(!zoneName) return alert("請輸入座標庫的名稱！");
-
-    const processCoordinates = (text) => {
-        let extractedCoords = [];
-        const gpxRegex = /lat="([^"]+)"\s+lon="([^"]+)"/gi; let gpxMatch;
-        while ((gpxMatch = gpxRegex.exec(text)) !== null) extractedCoords.push(`${gpxMatch[1]},${gpxMatch[2]}`);
-        const kmlRegex = /<coordinates>\s*([^<]+)\s*<\/coordinates>/gi; let kmlMatch;
-        while ((kmlMatch = kmlRegex.exec(text)) !== null) {
-            let pairs = kmlMatch[1].trim().split(/\s+/);
-            pairs.forEach(pair => { let parts = pair.split(','); if (parts.length >= 2) extractedCoords.push(`${parts[1]},${parts[0]}`); });
-        }
-        const generalRegex = /[-+]?([1-8]?\d(\.\d+)?|90(\.0+)?),\s*[-+]?(180(\.0+)?|((1[0-7]\d)|([1-9]?\d))(\.\d+)?)/g;
-        let genMatch = text.match(generalRegex);
-        if (genMatch) genMatch.forEach(m => extractedCoords.push(m.replace(/\s/g, '')));
-        extractedCoords = [...new Set(extractedCoords)];
-        if(extractedCoords.length === 0) return alert("解析失敗：找不到有效的座標格式！");
-        executeImportAndOptimize(zoneName, extractedCoords);
-    };
-
-    if (fileInput.files.length > 0) {
-        const reader = new FileReader();
-        reader.onload = function(e) { processCoordinates(e.target.result); fileInput.value = ''; };
-        reader.readAsText(fileInput.files[0]);
-    } else if (rawText) processCoordinates(rawText);
-    else alert("請貼上座標資料或上傳檔案！");
-};
-
-function executeImportAndOptimize(zoneName, newCoordsArray) {
-    fbPoolRef.child(zoneName).once('value').then(snap => {
-        let existingData = snap.val() || { coords: [] };
-        let existingCoords = existingData.coords || [];
-        let existingSet = new Set(existingCoords.map(item => item.coordString));
-        let addedCount = 0;
-        let tempPool = [...existingCoords];
-
-        newCoordsArray.forEach(coordStr => {
-            if(!existingSet.has(coordStr)) { 
-                tempPool.push({ coordString: coordStr, status: 0, endTime: null, assignedTo: null }); 
-                existingSet.add(coordStr); 
-                addedCount++; 
-            }
-        });
-
-        if (tempPool.length === 0) return alert("座標庫是空的，請先輸入座標！");
-
-        alert(`系統已啟動大腦！即將把水庫內 ${tempPool.length} 個座標（包含舊的與新加入的）全部打散，進行 100% 重新排列！請稍候...`);
-
-        let parsePool = tempPool.map((p, idx) => {
-            let parts = p.coordString.split(','); 
-            return { 
-                id: idx, origStr: p.coordString, status: p.status, 
-                endTime: p.endTime || null, assignedTo: p.assignedTo || null, 
-                lat: parseFloat(parts[0]), lng: parseFloat(parts[1]) 
-            };
-        });
-
-        let clusters = [], visited = new Set();
-        for (let i = 0; i < parsePool.length; i++) {
+    function generateEnvelopePoints() {
+        generatedPoints = []; const n = originalPoints.length; if (n === 0) return;
+        const clusters = [], visited = new Set(), pointCentroids = new Array(n);
+        for (let i = 0; i < n; i++) {
             if (visited.has(i)) continue;
-            let currentCluster = [parsePool[i]]; visited.add(i);
-            for (let j = 0; j < parsePool.length; j++) {
-                if (visited.has(j)) continue;
-                if (getDistance(parsePool[i].lat, parsePool[i].lng, parsePool[j].lat, parsePool[j].lng) <= 40) {
-                    currentCluster.push(parsePool[j]); visited.add(j);
+            const cluster = [], queue = [i]; visited.add(i);
+            while (queue.length > 0) {
+                const curr = queue.shift(); cluster.push(curr);
+                for (let j = 0; j < n; j++) {
+                    if (!visited.has(j) && getDistance(originalPoints[curr].lat, originalPoints[curr].lon, originalPoints[j].lat, originalPoints[j].lon) <= 90) {
+                        visited.add(j); queue.push(j);
+                    }
                 }
-            }
-            clusters.push(currentCluster);
+            } clusters.push(cluster);
         }
-
-        let clusterCenters = clusters.map(c => {
-            let sumLat = c.reduce((sum, p) => sum + p.lat, 0), sumLng = c.reduce((sum, p) => sum + p.lng, 0);
-            return { lat: sumLat/c.length, lng: sumLng/c.length, cluster: c };
+        clusters.forEach(cluster => {
+            let sumLat = 0, sumLon = 0; cluster.forEach(idx => { sumLat += originalPoints[idx].lat; sumLon += originalPoints[idx].lon; });
+            const centroid = { lat: sumLat / cluster.length, lon: sumLon / cluster.length };
+            cluster.forEach(idx => pointCentroids[idx] = centroid);
         });
-
-        let optimizedClusters = [];
-        if (clusterCenters.length > 0) {
-            let extremeIdx = 0;
-            if (clusterCenters.length > 1) {
-                let maxDist = -1;
-                for (let i = 1; i < clusterCenters.length; i++) {
-                    let d = getDistance(clusterCenters[0].lat, clusterCenters[0].lng, clusterCenters[i].lat, clusterCenters[i].lng);
-                    if (d > maxDist) { maxDist = d; extremeIdx = i; }
-                }
-            }
-            let currentCenter = clusterCenters[extremeIdx];
-            optimizedClusters.push(currentCenter.cluster);
-            clusterCenters.splice(extremeIdx, 1);
-
-            while (clusterCenters.length > 0) {
-                let nearestIdx = 0, minDist = Infinity;
-                for (let i = 0; i < clusterCenters.length; i++) {
-                    let d = getDistance(currentCenter.lat, currentCenter.lng, clusterCenters[i].lat, clusterCenters[i].lng);
-                    if (d < minDist) { minDist = d; nearestIdx = i; }
-                }
-                currentCenter = clusterCenters[nearestIdx];
-                optimizedClusters.push(currentCenter.cluster);
-                clusterCenters.splice(nearestIdx, 1);
-            }
-        }
-
-        let finalOptimizedCoords = [];
-        optimizedClusters.forEach(cluster => { 
-            cluster.forEach(p => finalOptimizedCoords.push({ 
-                coordString: p.origStr, status: p.status,
-                endTime: p.endTime, assignedTo: p.assignedTo 
-            })); 
-        });
-
-        fbPoolRef.child(zoneName).set({ coords: finalOptimizedCoords }).then(() => {
-            document.getElementById('fbPoolRawCoords').value = '';
-            alert(`全庫重新排列完成！\n名稱：${zoneName}\n本次新加入：${addedCount} 個。\n\n（所有新舊點位已完美融合為單筆畫路線！）`);
-        }).catch(e => alert("寫入失敗: " + e.message));
-    });
-}
-
-window.renderFbPoolStatus = function() {
-    const container = document.getElementById('fbPoolStatusContainer');
-    if(!container) return;
-
-    if (Object.keys(localFbPoolData).length === 0) {
-        container.innerHTML = '<p style="color: var(--meta-text);">目前尚未建立任何點位庫。</p>';
-        return;
-    }
-
-    let html = '';
-    let now = getSyncedTime();
-
-    for (let zone in localFbPoolData) {
-        let poolObj = localFbPoolData[zone];
-        let coords = poolObj.coords || [];
-        let isActive = poolObj.isActive !== false; 
         
-        let idle = [], pending = [], cooldown = [];
-        coords.forEach(c => {
-            let isActuallyExpired = (c.status === 2 && c.endTime && c.endTime < now);
-            if (c.status === 0 || isActuallyExpired) {
-                idle.push(c); 
-            } else if (c.status === 1) {
-                pending.push(c);
-            } else if (c.status === 2 && !isActuallyExpired) {
-                cooldown.push(c);
-            }
-        });
-
-        let safeZoneId = zone.replace(/[^a-zA-Z0-9]/g, '_') + '_' + Math.random().toString(36).substr(2, 5);
-
-        let titleColor = isActive ? '#2980b9' : '#7f8c8d';
-        let titleText = isActive ? `[${zone}] ➜ 空閒: ${idle.length} | 派發中: ${pending.length} | 冷卻: ${cooldown.length}` : `[${zone}] (已停用派發)`;
-        
-        let toggleBtn = `<button class="btn-add-wish" style="padding: 4px 10px; background: ${isActive ? '#e74c3c' : '#27ae60'}; font-size: 0.8em; margin-right: 5px; display:inline-flex; align-items:center; gap:4px;" onclick="event.stopPropagation(); toggleZoneActive('${zone}', ${isActive})"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">${isActive ? 'block' : 'check_circle'}</span> ${isActive ? '停用此庫' : '啟用此庫'}</button>`;
-
-        html += `
-        <details style="margin-bottom: 10px; background: var(--input-bg); padding: 12px; border-radius: 6px; border: 1px solid var(--input-border); cursor: pointer; outline: none; opacity: ${isActive ? '1' : '0.6'}; transition: all 0.3s;">
-            <summary style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; list-style: none;">
-                <div style="font-weight: bold; color: ${titleColor}; font-size: 1.1em;">
-                    ${titleText}
-                </div>
-                <div style="display: flex; gap: 5px; align-items: center;">
-                    ${toggleBtn}
-                    <button class="btn-add-wish" style="padding: 4px 10px; background: #2980b9; font-size: 0.8em; display:inline-flex; align-items:center; gap:4px;" onclick="event.stopPropagation(); togglePoolMap('${zone}', '${safeZoneId}')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">map</span> 查看點位</button>
-                </div>
-            </summary>
-            
-            <div style="margin-top: 10px; border-top: 1px dashed #ccc; padding-top: 10px; cursor: auto;">
-                <div id="pool_map_container_${safeZoneId}" style="width: 100%; height: 400px; margin-bottom: 15px; border-radius: 8px; border: 2px solid var(--input-border); display: none; background: #f8f9fa; position: relative; z-index: 1;" onclick="event.stopPropagation();"></div>
-                <div style="font-size: 0.9em; max-height: 250px; overflow-y: auto;">
-        `;
-
-        if (idle.length > 0) {
-            html += `<div style="color: #27ae60; font-weight: bold; margin-bottom: 5px; display:flex; align-items:center; gap:4px;"><span class="material-symbols-outlined" style="font-size:1.2em;">eco</span> 空閒座標清單：</div>`;
-            let idleText = idle.map(c => `[${c.coordString}]`).join('<br>');
-            html += `<div style="color: var(--meta-text); margin-bottom: 15px; font-family: monospace;">${idleText}</div>`;
-        }
-        if (cooldown.length > 0) {
-            html += `<div style="color: #e74c3c; font-weight: bold; margin-bottom: 5px; display:flex; align-items:center; gap:4px;"><span class="material-symbols-outlined" style="font-size:1.2em;">hourglass_empty</span> 冷卻中清單：</div>`;
-            let cdText = cooldown.map(c => {
-                if (!c.endTime) return `[${c.coordString}] - <span style="color:#e67e22; font-weight:bold; display:inline-flex; align-items:center; gap:2px;"><span class="material-symbols-outlined" style="font-size:1.1em;">warning</span> 無時間紀錄</span>`;
-                let d = new Date(c.endTime);
-                return `[${c.coordString}] - 預計解鎖: <b>${d.getMonth()+1}/${d.getDate()} ${d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}</b>`;
-            }).join('<br>');
-            html += `<div style="color: var(--meta-text); margin-bottom: 15px; font-family: monospace;">${cdText}</div>`;
-        }
-        if (pending.length > 0) {
-            html += `<div style="color: #f39c12; font-weight: bold; margin-bottom: 5px; display:flex; align-items:center; gap:4px;"><span class="material-symbols-outlined" style="font-size:1.2em;">send</span> 派發中：</div>`;
-            let pText = pending.map(c => `[${c.coordString}] - ${c.assignedTo || '未知群友'}`).join('<br>');
-            html += `<div style="color: var(--meta-text); font-family: monospace;">${pText}</div>`;
-        }
-        if (idle.length === 0 && cooldown.length === 0 && pending.length === 0) {
-            html += `<div style="color: var(--meta-text);">此點位庫無任何座標。</div>`;
-        }
-
-        html += `</div></div></details>`;
-    }
-    container.innerHTML = html;
-};
-
-window.updateFbTask = function(taskKey, field, value) {
-    fbTasksRef.child(taskKey).update({ [field]: value });
-};
-
-window.createForceBloomTask = function() {
-    if(!isEditMode || !window.requireNetwork()) return;
-    const title = document.getElementById('fbTaskTitle').value.trim();
-    const targetAmt = parseInt(document.getElementById('fbTaskTarget').value) || 0;
-    if(!title) return alert("請輸入任務標題！");
-
-    let user = firebase.auth().currentUser;
-    let randomSecret = Math.floor(1000 + Math.random() * 9000).toString();
-
-    fbTasksRef.push({
-        title: title, targetAmount: targetAmt, creatorUid: user.uid, 
-        taskSecret: randomSecret, createdAt: firebase.database.ServerValue.TIMESTAMP, isActive: true, enrollees: {} 
-    }).then(() => {
-        document.getElementById('fbTaskTitle').value = ''; 
-        document.getElementById('fbTaskTarget').value = '0';
-        alert(`任務發布成功！`);
-    }).catch(e => alert("發布失敗：" + e.message));
-};
-
-window.enrollForceBloom = function(taskKey) {
-    const nick = document.getElementById(`fbNick_${taskKey}`).value.trim();
-    const amt = parseInt(document.getElementById(`fbAmount_${taskKey}`).value);
-    if(!nick || isNaN(amt) || amt <= 0) return alert("請輸入正確的暱稱與數量！");
-
-    let user = typeof firebase !== 'undefined' && firebase.auth ? firebase.auth().currentUser : null;
-    let enrolleeUid = user ? user.uid : 'guest';
-    
-    // 預先產生一組新的隨機 Key，用來當作這筆報名者的專屬 ID
-    let newEnrolleeKey = database.ref().push().key;
-    
-    // 鎖定該任務進行原子性 (Atomic) 雲端交易
-    fbTasksRef.child(taskKey).transaction((currentTask) => {
-        // 如果任務剛好被刪除，則直接返回
-        if (currentTask === null) return currentTask;
-
-        // 如果該任務有限制數量，就在雲端進行最嚴格的即時計算
-        if (currentTask.targetAmount > 0) {
-            let currentTotal = 0;
-            if (currentTask.enrollees) {
-                Object.values(currentTask.enrollees).forEach(en => {
-                    if (en.status !== -1) currentTotal += en.amount;
-                });
-            }
-            
-            // 如果加上這次報名的數量超過了上限，回傳 undefined 來強制中止交易
-            if (currentTotal + amt > currentTask.targetAmount) {
-                return; 
-            }
-        }
-
-        // 確保 enrollees 物件存在
-        if (!currentTask.enrollees) {
-            currentTask.enrollees = {};
-        }
-
-        // 將報名資料寫入
-        currentTask.enrollees[newEnrolleeKey] = {
-            nickname: nick, amount: amt, status: 0, assignedCoords: [], uid: enrolleeUid
-        };
-
-        // 回傳修改後的物件，Firebase 會負責將其安全寫入
-        return currentTask;
-        
-    }, (error, committed, snapshot) => {
-        // 交易完成後的回呼判斷
-        if (error) {
-            alert("❌ 報名發生系統異常：" + error.message);
-        } else if (!committed) {
-            // committed 為 false 代表交易被我們 return 中止了 (名額不夠)
-            alert("⚠️ 報名失敗：名額已被搶先報滿或超過限制數量了！");
-        } else {
-            alert(`🎉 報名成功！[${nick}] 已成功卡位登記 ${amt} 朵。`);
-        }
-    });
-};
-
-window.removeEnrollee = async function(taskKey, eKey) {
-    let task = localFbTasks[taskKey];
-    if(!task || !task.enrollees || !task.enrollees[eKey]) return;
-    let enrollee = task.enrollees[eKey];
-
-    if (enrollee.status === 2) {
-        if(!confirm("這名群友已經「完成開花」並進入冷卻了！\n刪除他的紀錄【不會】改變座標的冷卻狀態（會繼續倒數）。\n確定要刪除報名面板上的紀錄嗎？")) return;
-        await fbTasksRef.child(`${taskKey}/enrollees/${eKey}`).remove();
-        return; 
-    }
-
-    if(!confirm("確定要刪除這名群友的報名嗎？\n這會將他名下「尚未開花」的座標退回空閒庫！")) return;
-
-    if (enrollee.status === 1 && enrollee.assignedCoords && enrollee.assignedCoords.length > 0) {
-        let poolSnap = await fbPoolRef.once('value');
-        let pools = poolSnap.val();
-        let updates = {};
-        for(let z in pools) {
-            let coords = pools[z].coords;
-            if(!coords) continue;
-            for(let i=0; i<coords.length; i++) {
-                if(enrollee.assignedCoords.includes(coords[i].coordString) && coords[i].status === 1) {
-                    updates[`${z}/coords/${i}/status`] = 0; 
-                    updates[`${z}/coords/${i}/endTime`] = null; 
-                    updates[`${z}/coords/${i}/assignedTo`] = null;
+        for (let i = 0; i < n; i++) {
+            const center = originalPoints[i], centroid = pointCentroids[i];
+            const distToCentroid = getDistance(centroid.lat, centroid.lon, center.lat, center.lon);
+            const outwardAngle = distToCentroid < 1 ? 0 : getBearing(centroid.lat, centroid.lon, center.lat, center.lon);
+            let coastalPoints = [];
+            for (let a = 0; a < 360; a += 15) { 
+                if (distToCentroid >= 1) {
+                    let diff = Math.abs((a - outwardAngle + 360) % 360); if (diff > 180) diff = 360 - diff;
+                    if (diff > 90) continue; 
                 }
+                const pt = getDestination(center.lat, center.lon, Math.random() * 5 + 45, a);
+                let isCoastal = true;
+                for (let k = 0; k < n; k++) {
+                    if (k === i) continue;
+                    if (getDistance(pt.lat, pt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { isCoastal = false; break; }
+                }
+                if (isCoastal) coastalPoints.push(pt);
+            }
+            if (coastalPoints.length > 0) {
+                generatedPoints.push(coastalPoints[Math.floor(coastalPoints.length / 2)]);
+            } else {
+                let fallbackPt = getDestination(center.lat, center.lon, 45, outwardAngle);
+                generatedPoints.push(fallbackPt);
             }
         }
-        if(Object.keys(updates).length > 0) await fbPoolRef.update(updates);
-
-        await fbTasksRef.child(`${taskKey}/enrollees/${eKey}`).remove();
-
-        let taskSnap = await fbTasksRef.child(taskKey).once('value');
-        let updatedTask = taskSnap.val();
-        let newFullRoute = [], allAssignedNodes = [];
-
-        if (updatedTask && updatedTask.enrollees) {
-            Object.values(updatedTask.enrollees).forEach(en => {
-                if (en.status >= 1 && en.assignedCoords) {
-                    en.assignedCoords.forEach(cStr => {
-                        let parts = cStr.split(',');
-                        allAssignedNodes.push({ coordString: cStr, lat: parseFloat(parts[0]), lng: parseFloat(parts[1]) });
-                    });
-                }
-            });
-        }
-
-        if (allAssignedNodes.length > 0) {
-            let currentNode = allAssignedNodes[0];
-            newFullRoute.push(currentNode.coordString);
-            for (let i = 1; i < allAssignedNodes.length; i++) {
-                let targetNode = allAssignedNodes[i];
-                let cStr = targetNode.coordString;
-                if (newFullRoute.length === 0 || newFullRoute[newFullRoute.length - 1] !== cStr) {
-                    newFullRoute.push(cStr); 
-                }
-                currentNode = targetNode;
-            }
-        }
-        
-        await fbTasksRef.child(taskKey).update({ fullRoute: newFullRoute });
-        alert("已刪除群友並釋放座標！\n(系統已自動將該群友從 GPX 路線圖中移除，路線重新縫合完畢)");
-        return;
-    }
-    
-    await fbTasksRef.child(`${taskKey}/enrollees/${eKey}`).remove();
-    alert("已刪除報名資料！");
-};
-
-window.setTaskCooldown = function(taskKey, hours) {
-    if(hours) fbTasksRef.child(taskKey).update({ selectedCooldown: hours }).then(() => alert(`已設定冷卻時間為 ${hours} 小時！`));
-}
-
-window.markForceBloomDone = async function(taskKey, eKey, idx, mode = 'all') {
-    let task = localFbTasks[taskKey];
-    let enrollee = task.enrollees[eKey];
-    let amt = parseInt(enrollee.amount) || 1;
-    
-    let confirmMsg = "";
-    let targetCoords = [];
-
-    if (mode === 'single') {
-        confirmMsg = `確定已經在現場開完這 1 朵花嗎？\n按下確定後，【此單一座標】將進入冷卻！`;
-        targetCoords = [enrollee.assignedCoords[idx]]; 
-    } else {
-        confirmMsg = amt > 1 ? `確定已經在現場開完這 ${amt} 朵花了嗎？\n按下確定後，您名下的【所有座標】將同時進入冷卻！` : `確定在現場開完這朵花了嗎？將進入冷卻！`;
-        targetCoords = enrollee.assignedCoords || []; 
     }
 
-    if(confirm(confirmMsg)) {
-        let cdHours = parseFloat(task.selectedCooldown || 23), durationMs = cdHours * 3600000;
+    function calculateTotalDistance(points) {
+        let total = 0;
+        for (let i = 0; i < points.length - 1; i++) {
+            total += getDistance(points[i].lat, points[i].lon, points[i+1].lat, points[i+1].lon);
+        }
+        return total;
+    }
+
+    async function processData() {
+        const mainBtn = document.getElementById('generateMainBtn');
+        mainBtn.innerHTML = '<span class="material-symbols-rounded">sync</span> 計算處理中...';
+        mainBtn.disabled = true;
+
         try {
-            let snap = await fbPoolRef.once('value');
-            let pools = snap.val();
-            let updates = {};
-            let syncedNow = getSyncedTime();
-            
-            for(let z in pools) {
-                let coords = pools[z].coords;
-                if(!coords) continue;
-                for(let i=0; i<coords.length; i++) {
-                    if(targetCoords.includes(coords[i].coordString) && coords[i].status === 1) {
-                        updates[`/ForceBloom_Pool/${z}/coords/${i}/status`] = 2; 
-                        updates[`/ForceBloom_Pool/${z}/coords/${i}/endTime`] = syncedNow + durationMs;
-                    }
-                }
+            originalPoints = []; generatedPoints = [];
+            const fileInput = document.getElementById('fileInput');
+            const coordInput = document.getElementById('coordInput').value.trim();
+
+            if (fileInput.files.length > 0) {
+                try {
+                    const text = await fileInput.files[0].text(); parseGPX(text);
+                } catch(e) { throw new Error("檔案讀取發生異常。"); }
+            } else if (coordInput !== "") {
+                parseTextCoords(coordInput);
+            } else { 
+                throw new Error("來源空缺，請匯入 GPX 或輸入座標參數。"); 
             }
+
+            if (originalPoints.length === 0) throw new Error("資料解析失敗，未檢測到有效空間座標。");
+
+            generateSmartPoints(); 
             
-            let allDone = true;
-            if (mode === 'all') {
-                allDone = true; 
+            if (document.getElementById('densifyCheck').checked) {
+                let minS = parseFloat(document.getElementById('minStep').value);
+                let maxS = parseFloat(document.getElementById('maxStep').value);
+                if (isNaN(minS) || minS < 1) minS = 5;
+                if (isNaN(maxS) || maxS < minS) maxS = Math.max(10, minS);
+                generatedPoints = densifyRoute(generatedPoints, minS, maxS);
+            }
+
+            try {
+                if(originalLayerGroup) originalLayerGroup.clearLayers();
+                if(generatedLayerGroup) generatedLayerGroup.clearLayers();
+                drawMap();
+            } catch (e) { console.warn("地圖繪製異常", e); }
+            
+            let totalDistMeters = calculateTotalDistance(generatedPoints);
+            let speedVal = parseFloat(document.getElementById('speedInput').value) || 15;
+            let speedUnit = document.getElementById('speedUnit').value;
+
+            let speedMs = 1;
+            if (speedUnit === 'kmh') speedMs = speedVal * (1000 / 3600);
+            else if (speedUnit === 'ms') speedMs = speedVal;
+            else if (speedUnit === 'mmin') speedMs = speedVal / 60;
+
+            let timeSeconds = totalDistMeters / speedMs;
+
+            let distText = totalDistMeters >= 1000 ? (totalDistMeters / 1000).toFixed(2) + " 公里" : Math.round(totalDistMeters) + " 公尺";
+            
+            let timeText = "";
+            if (timeSeconds < 60) {
+                timeText = Math.round(timeSeconds) + " 秒";
+            } else if (timeSeconds < 3600) {
+                let mins = Math.floor(timeSeconds / 60);
+                let secs = Math.round(timeSeconds % 60);
+                timeText = `${mins} 分 ${secs} 秒`;
             } else {
-                for (let cStr of enrollee.assignedCoords) {
-                    if (targetCoords.includes(cStr)) continue; 
-                    let isDoneInPool = false;
-                    for (let z in pools) {
-                        if (pools[z].coords) {
-                            let c = pools[z].coords.find(x => x.coordString === cStr);
-                            if (c && c.status === 2) isDoneInPool = true;
-                        }
-                    }
-                    if (!isDoneInPool) { allDone = false; break; }
-                }
+                let hrs = Math.floor(timeSeconds / 3600);
+                let mins = Math.floor((timeSeconds % 3600) / 60);
+                timeText = `${hrs} 小時 ${mins} 分鐘`;
             }
 
-            if (allDone) updates[`/ForceBloom_Tasks/${taskKey}/enrollees/${eKey}/status`] = 2;
-
-            if(Object.keys(updates).length > 0) {
-                await database.ref().update(updates);
-                if (mode === 'single') alert(`單點回報成功！\n該座標已進入冷卻狀態。`);
-                else alert(`全部回報成功！\n您名下的 ${targetCoords.length} 個座標已全部進入冷卻狀態。`);
-            } else {
-                alert("狀態已更新！");
-            }
-        } catch (err) {
-            console.error(err);
-            alert("更新發生錯誤：" + err.message);
-        }
-    }
-};
-
-window.deleteForceBloomTask = async function(taskKey) {
-    let task = localFbTasks[taskKey];
-    if (!task) return;
-
-    let hasActiveCoords = false;
-    if (task.enrollees) {
-        Object.values(task.enrollees).forEach(en => {
-            if (en.status === 1 && en.assignedCoords && en.assignedCoords.length > 0) hasActiveCoords = true;
-        });
-    }
-
-    let confirmMsg = hasActiveCoords 
-        ? "警告：此任務還有「派發中但尚未完成」的座標！\n刪除任務會自動將這些未完成的座標【退回空閒庫】。\n\n確定要永久刪除嗎？" 
-        : "確定要永久刪除此任務嗎？";
-
-    if (confirm(confirmMsg)) {
-        if (hasActiveCoords) {
-            let poolSnap = await fbPoolRef.once('value');
-            let pools = poolSnap.val();
-            let updates = {};
-            let coordsToRelease = [];
-            Object.values(task.enrollees).forEach(en => {
-                if (en.status === 1 && en.assignedCoords) coordsToRelease = coordsToRelease.concat(en.assignedCoords);
-            });
-
-            for (let z in pools) {
-                let coords = pools[z].coords;
-                if (!coords) continue;
-                for (let i = 0; i < coords.length; i++) {
-                    if (coordsToRelease.includes(coords[i].coordString) && coords[i].status === 1) {
-                        updates[`${z}/coords/${i}/status`] = 0;
-                        updates[`${z}/coords/${i}/endTime`] = null;
-                        updates[`${z}/coords/${i}/assignedTo`] = null;
-                    }
-                }
-            }
-            if (Object.keys(updates).length > 0) await fbPoolRef.update(updates);
-        }
-        fbTasksRef.child(taskKey).remove().then(() => alert("任務已刪除！"));
-    }
-};
-
-window.dispatchForceBloom = async function(taskKey, totalReq, isAuto = false) {
-    if(!window.requireNetwork()) return; 
-    try {
-        if (!isAuto) {
-            if(totalReq <= 0) return alert("目前沒有任何人報名喔！");
-            if(!confirm(`確定要為這 ${totalReq} 朵需求派發座標嗎？`)) return;
-        } else {
-            if(totalReq <= 0) return;
-        }
-
-        let poolSnap = await fbPoolRef.once('value');
-        let pools = poolSnap.val();
-        if(!pools) {
-            if(!isAuto) alert("座標庫是空的！請先匯入點位。");
-            return;
-        }
-
-        let task = localFbTasks[taskKey];
-        if(!task || !task.enrollees) {
-            if(!isAuto) alert("任務資料異常！");
-            return;
-        }
-
-        let enrolleeKeys = Object.keys(task.enrollees);
-        let validEnrollees = [];
-        let currentTotalReq = 0;
-
-        enrolleeKeys.forEach(eKey => {
-            let person = task.enrollees[eKey];
-            if (person && person.status === 0) {
-                let amt = parseInt(person.amount, 10) || 0;
-                if (amt > 0) {
-                    validEnrollees.push({ key: eKey, person: person, amount: amt });
-                    currentTotalReq += amt;
-                }
-            }
-        });
-
-        if (currentTotalReq <= 0) {
-            if(!isAuto) alert("目前沒有待派發的需求！");
-            return;
-        }
-
-        
-
-        validEnrollees = validEnrollees.filter(e => e.amount > 0);
-        if (validEnrollees.length === 0) {
-            if(!isAuto) alert("防虧本調節後無人需要派發！");
-            return;
-        }
-
-        let availableNodes = [];
-        let uniqueAvailable = new Set();
-        let now = getSyncedTime(); 
-        
-        for (const zoneName of Object.keys(pools)) {
-            let isActiveZone = pools[zoneName].isActive !== false;
-            let coords = pools[zoneName].coords || [];
+            document.getElementById('displayDistance').innerText = distText;
+            document.getElementById('displayTime').innerText = timeText;
             
-            for (let i = 0; i < coords.length; i++) {
-                let c = coords[i];
-                if (c && c.coordString) {
-                    let parts = c.coordString.split(',');
-                    let nodeObj = { 
-                        zone: zoneName, origIndex: i, coordString: c.coordString, 
-                        lat: parseFloat(parts[0]), lng: parseFloat(parts[1]), status: c.status
-                    };
-                    
-                    let isActuallyExpired = (c.status === 2 && c.endTime && c.endTime < now);
-                    let isAvailable = (c.status === 0) || isActuallyExpired;
-
-                    if (isAvailable && isActiveZone && !uniqueAvailable.has(c.coordString)) {
-                        uniqueAvailable.add(c.coordString);
-                        availableNodes.push(nodeObj);
-                    }
-                }
-            }
-        }
-
-        if (availableNodes.length === 0) return alert("沒有任何「已啟用」的空閒座標！");
-
-        if (availableNodes.length < currentTotalReq) {
-            alert(`系統警告：所有已啟用的水庫，空閒座標僅剩 ${availableNodes.length} 個。\n將自動調節群友報名數量！`);
-            validEnrollees.sort((a, b) => b.amount - a.amount);
-            while (currentTotalReq > availableNodes.length) {
-                if (validEnrollees[0].amount > 0) {
-                    validEnrollees[0].amount--; currentTotalReq--;
-                    validEnrollees.sort((a, b) => b.amount - a.amount); 
-                } else break;
-            }
-            let up = {};
-            validEnrollees.forEach(e => {
-                up[`ForceBloom_Tasks/${taskKey}/enrollees/${e.key}/amount`] = e.amount;
-                task.enrollees[e.key].amount = e.amount;
-            });
-            await database.ref().update(up);
-        }
-
-        validEnrollees = validEnrollees.filter(e => e.amount > 0);
-        if (validEnrollees.length === 0) return alert("調節後無人需要派發！");
-
-        let fullRoute = [], realAssignedNodes = [];
-        
-        if (availableNodes.length > 0) {
-            const centerLat = availableNodes.reduce((s, n) => s + n.lat, 0) / availableNodes.length;
-            const centerLng = availableNodes.reduce((s, n) => s + n.lng, 0) / availableNodes.length;
-            availableNodes.sort((a, b) => {
-                const angleA = Math.atan2(a.lat - centerLat, (a.lng - centerLng) * Math.cos(centerLat * Math.PI / 180));
-                const angleB = Math.atan2(b.lat - centerLat, (b.lng - centerLng) * Math.cos(centerLat * Math.PI / 180));
-                return angleA - angleB;
-            });
-        }
-
-        let currentNode = availableNodes.shift(); 
-        fullRoute.push(currentNode.coordString); 
-        realAssignedNodes.push(currentNode);
-        
-        let needed = currentTotalReq - 1;
-        while (needed > 0 && availableNodes.length > 0) {
-            let bestIdx = 0, minDist = Infinity;
-            for (let i = 0; i < availableNodes.length; i++) {
-                let d = getDistance(currentNode.lat, currentNode.lng, availableNodes[i].lat, availableNodes[i].lng);
-                if (d < minDist) { minDist = d; bestIdx = i; }
-            }
-            let candidate = availableNodes.splice(bestIdx, 1)[0];
-            let cStr = candidate.coordString;
-            if (fullRoute.length === 0 || fullRoute[fullRoute.length - 1] !== cStr) fullRoute.push(cStr); 
-            currentNode = candidate;
-            realAssignedNodes.push(candidate); 
-            needed--;
-        }
-
-        let routeCursor = 0, updates = {}; 
-        for (let i = 0; i < validEnrollees.length; i++) {
-            let eKey = validEnrollees[i].key;
-            let person = validEnrollees[i].person;
-            let amt = validEnrollees[i].amount; 
-            let myCoords = [];
+            document.getElementById('resultCard').style.display = 'block';
             
-            for (let j = 0; j < amt; j++) {
-                let node = realAssignedNodes[routeCursor];
-                if (!node) continue; 
-                myCoords.push(node.coordString);
-                updates[`/ForceBloom_Pool/${node.zone}/coords/${node.origIndex}/status`] = 1; 
-                updates[`/ForceBloom_Pool/${node.zone}/coords/${node.origIndex}/assignedTo`] = person.nickname; 
-                routeCursor++;
-            }
-            
-            updates[`/ForceBloom_Tasks/${taskKey}/enrollees/${eKey}/status`] = 1; 
-            updates[`/ForceBloom_Tasks/${taskKey}/enrollees/${eKey}/assignedCoords`] = myCoords;
-        }
-        
-        updates[`/ForceBloom_Tasks/${taskKey}/fullRoute`] = fullRoute;
-        
-        await database.ref().update(updates);
-        if (!isAuto) alert(`派發成功！\n系統已採自動循序分配，共發配了 ${currentTotalReq} 個點位。`);
-        else console.log(`自動派發成功！發配了 ${currentTotalReq} 朵。`);
-        
-    } catch(err) {
-        console.error("派發錯誤：", err);
-        alert(`派發失敗！發生系統錯誤：\n${err.message}`);
-    }
-};
+            setTimeout(() => {
+                document.getElementById('resultCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }, 100);
 
-window.downloadGPX = function(taskKey, format = 'standard', useSmartRoute = false) {
-    const ua = navigator.userAgent || navigator.vendor || window.opera;
-    if (ua.indexOf("Line") > -1 || ua.indexOf("FBAN") > -1 || ua.indexOf("FBAV") > -1 || ua.indexOf("Instagram") > -1) {
-        return alert("內建瀏覽器 (LINE/FB/IG) 封鎖了下載功能！\n\n請點擊右上角（或右下角）的選單\n選擇「以預設瀏覽器開啟」(Safari / Chrome)\n再按一次下載按鈕即可成功！");
+        } catch(error) {
+            alert("系統錯誤：" + error.message);
+        } finally {
+            mainBtn.innerHTML = '<span class="material-symbols-rounded">rocket_launch</span> 立即生成路線';
+            mainBtn.disabled = false;
+        }
     }
 
-    let task = localFbTasks[taskKey];
-    let allCoords = task.fullRoute || []; 
-    
-    if(allCoords.length === 0 && task.enrollees) {
-        Object.values(task.enrollees).forEach(en => { if(en.assignedCoords) allCoords = allCoords.concat(en.assignedCoords); });
-    }
-    if(allCoords.length === 0) return alert("沒有可以下載的座標！");
-
-    let originalFlowerPoints = [];
-    allCoords.forEach(coord => {
-        if (!coord.startsWith('VIRTUAL:')) {
-            let parts = coord.split(',');
-            originalFlowerPoints.push({ lat: parseFloat(parts[0]), lon: parseFloat(parts[1]) });
-        }
-    });
-
-    let trackPoints = [];
-
-    if (useSmartRoute) {
-        let smartTrackPoints = generateSmartRoute(originalFlowerPoints);
-        smartTrackPoints = densifyRoute(smartTrackPoints, 50, 100);
-        
-        if (smartTrackPoints.length > 1) {
-            let returnTrip = [...smartTrackPoints].reverse();
-            returnTrip.shift(); 
-            smartTrackPoints = smartTrackPoints.concat(returnTrip);
-        }
-        trackPoints = smartTrackPoints.map(p => ({ lat: p.lat.toFixed(6), lon: p.lon.toFixed(6) }));
-    } else {
-        let offsetPoints = originalFlowerPoints.map(p => {
-            const randomDist = 30 + Math.random() * 10;
-            const randomAngle = Math.random() * 360;
-            return getDestination(p.lat, p.lon, randomDist, randomAngle);
+    function drawMap() {
+        if (!originalLayerGroup || !generatedLayerGroup) return;
+        originalPoints.forEach(pt => {
+            L.circle([pt.lat, pt.lon], { color: '#4A90E2', fillColor: '#4A90E2', fillOpacity: 0.1, weight: 1, radius: 40 }).addTo(originalLayerGroup);
+            L.circleMarker([pt.lat, pt.lon], { radius: 4, color: '#2980b9', fillColor: '#4A90E2', fillOpacity: 1 }).addTo(originalLayerGroup);
         });
-        trackPoints = offsetPoints.map(p => ({ lat: p.lat.toFixed(6), lon: p.lon.toFixed(6) }));
+        generatedPoints.forEach(pt => { L.circleMarker([pt.lat, pt.lon], { radius: 3, color: '#c0392b', fillColor: '#E74C3C', fillOpacity: 1 }).addTo(generatedLayerGroup); });
+        if (originalPoints.length > 1) L.polyline(originalPoints.map(p => [p.lat, p.lon]), { color: '#4A90E2', weight: 3, opacity: 0.7 }).addTo(originalLayerGroup);
+        if (generatedPoints.length > 1) L.polyline(generatedPoints.map(p => [p.lat, p.lon]), { color: '#E74C3C', weight: 3, opacity: 0.7 }).addTo(generatedLayerGroup);
     }
 
-    let gpxContent = "";
-    let fileNameSuffix = "";
-
-    if (format === 'anyTo') {
-        fileNameSuffix = useSmartRoute ? "_AnyTo_防小人" : "_AnyTo_純偏移";
-        gpxContent = `<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="YourWebMapTool" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk>\n    <name>${task.title}</name>\n    <trkseg>\n`;
-        trackPoints.forEach(p => { gpxContent += `      <trkpt lat="${p.lat}" lon="${p.lon}"></trkpt>\n`; });
-        gpxContent += `    </trkseg>\n  </trk>\n</gpx>`;
-    } else if (format === 'iTools') {
-        fileNameSuffix = useSmartRoute ? "_iTools_防小人" : "_iTools_純偏移";
-        gpxContent = `<?xml version="1.0" encoding="UTF-8" ?>\n<gpx>\n    <iToolsData speed="260.0" link="https://www.thinkskysoft.com" loop="0">\n        <rights>Copyright (c) 2018, thinkskysoft</rights>\n    </iToolsData>\n`;
-        trackPoints.forEach(p => { gpxContent += `    <wpt lat="${p.lat}" lon="${p.lon}">\n        <name>WP1</name>\n    </wpt>\n`; });
-        gpxContent += `</gpx>`;
-    } else if (format === 'flashman') {
-        fileNameSuffix = useSmartRoute ? "_Flashman_防小人" : "_Flashman_純偏移";
-        gpxContent = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.topografix.com/GPX/1/1" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd" version="1.1" creator="YourWebMapTool">\n`;
-        let fIdx = 1;
-        let currentTime = new Date().toISOString(); 
-        trackPoints.forEach(p => {
-            gpxContent += `  <wpt lat="${p.lat}" lon="${p.lon}">\n`;
-            gpxContent += `    <time>${currentTime}</time>\n`;
-            gpxContent += `    <name><![CDATA[路徑點 ${fIdx}]]></name>\n`;
-            gpxContent += `  </wpt>\n`;
-            fIdx++;
-        });
-        gpxContent += `</gpx>`;
-    } else {
-        fileNameSuffix = useSmartRoute ? "_Standard_防小人" : "_Standard_純偏移";
-        gpxContent = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1">\n  <trk>\n    <name>${task.title} 路線</name>\n    <trkseg>\n`;
-        trackPoints.forEach(p => { gpxContent += `      <trkpt lat="${p.lat}" lon="${p.lon}"></trkpt>\n`; });
-        gpxContent += `    </trkseg>\n  </trk>\n`;
-        gpxContent += `</gpx>`;
-    }
-
-    let now = new Date();
-    let dateStr = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`;
-    let timeStr = (task.exportTime || '').trim() !== '' ? task.exportTime.trim() : `${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`;
-    
-    timeStr = timeStr.replace(/[:\/\\?*|"<>\s]/g, ''); 
-    const fileName = `${dateStr}_${timeStr}_${task.title}${fileNameSuffix}.gpx`;
-
-    try {
-        const encodedUri = "data:application/gpx+xml;charset=utf-8," + encodeURIComponent(gpxContent);
-        const a = document.createElement('a');
-        a.href = encodedUri;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-    } catch (e) {
-        const blob = new Blob([gpxContent], { type: 'application/gpx+xml' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
+    function exportGPX(format) {
+        if (generatedPoints.length === 0) return alert("請先生成路線！");
+        let baseName = document.getElementById('customFileName').value.trim() || "防小人路線";
+        let gpxText = getGPXString(format, baseName);
+        let blob = new Blob([gpxText], { type: 'application/gpx+xml' });
+        let url = URL.createObjectURL(blob);
+        let a = document.createElement('a');
+        let uniqueStamp = new Date().getTime();
         a.href = url;
-        a.download = fileName;
+        a.download = `${baseName}_${format}_${uniqueStamp}.gpx`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
     }
-};
 
-window.copyTaskInvite = function(taskKey) {
-    const task = localFbTasks[taskKey];
-    if(!task) return;
-
-    let totalDispatched = 0;
-    let enrolleeList = "";
-    if(task.enrollees) {
-        Object.values(task.enrollees).forEach(en => {
-            if(en.status >= 1) {
-                enrolleeList += `${en.nickname} ${en.amount}朵\n`;
-                totalDispatched += parseInt(en.amount);
-            }
+    function getGPXString(format, routeName) {
+        let baseName = routeName || "防小人路線";
+        let baseTime = new Date(); 
+        let gpxContent = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+        gpxContent += `<gpx version="1.1" creator="GPX Smart Island Generator" xmlns="http://www.topografix.com/GPX/1/1">\n`;
+        gpxContent += `  <metadata>\n    <name>${baseName}</name>\n  </metadata>\n`;
+        gpxContent += `  <trk>\n    <name>${baseName} (${format})</name>\n    <trkseg>\n`;
+        
+        generatedPoints.forEach((pt, idx) => {
+            let timeStr = new Date(baseTime.getTime() + idx * 3000).toISOString();
+            gpxContent += `      <trkpt lat="${pt.lat.toFixed(6)}" lon="${pt.lon.toFixed(6)}">\n`;
+            gpxContent += `        <time>${timeStr}</time>\n`;
+            gpxContent += `      </trkpt>\n`;
         });
-    }
-
-    let firstCoord = "尚未派發";
-    for(let en of Object.values(task.enrollees)) {
-        if(en.assignedCoords && en.assignedCoords.length > 0) {
-            firstCoord = en.assignedCoords[0]; 
-            break;
-        }
-    }
-
-    const inviteText = `
-強開花朵：${task.title}
-強開數量：${totalDispatched}朵
-首花座標：[${firstCoord}]
-${enrolleeList}
-感謝以上花農參與強開團
-本次強開僅限本群組使用，切勿外流
-收花請用白花/櫻花收，白花強開田希望白白淨淨的`;
-
-    window.safeCopyToClipboard(inviteText, "複製成功");
-};
-
-let activeMaps = {}; 
-
-window.toggleTaskMap = function(taskKey) {
-    const container = document.getElementById(`map_container_${taskKey}`);
-    if (container.style.display === 'none') {
-        container.style.display = 'block';
-        renderTaskMap(taskKey);
-    } else {
-        container.style.display = 'none';
-    }
-};
-
-window.renderTaskMap = function(taskKey) {
-    const task = localFbTasks[taskKey];
-    const containerId = `map_container_${taskKey}`;
-    
-    let allCoords = [];
-    if(task.enrollees) {
-        Object.values(task.enrollees).forEach(en => {
-            if(en.assignedCoords) allCoords = allCoords.concat(en.assignedCoords);
-        });
-    }
-    if(allCoords.length === 0) return;
-
-    let originalFlowerPoints = [];
-    allCoords.forEach(coord => {
-        if (!coord.startsWith('VIRTUAL:')) {
-            let parts = coord.split(',');
-            originalFlowerPoints.push({ lat: parseFloat(parts[0]), lon: parseFloat(parts[1]) });
-        }
-    });
-
-    let offsetPoints = originalFlowerPoints.map(p => {
-        const randomDist = 30 + Math.random() * 10;
-        const randomAngle = Math.random() * 360;
-        return getDestination(p.lat, p.lon, randomDist, randomAngle);
-    });
-    
-    const routePoints = offsetPoints.map(p => [p.lat, p.lon]);
-
-    if (activeMaps[taskKey]) { 
-        activeMaps[taskKey].remove();
-        delete activeMaps[taskKey];
-    }
-
-    const map = L.map(containerId, {
-        zoomControl: false,        
-        dragging: false,           
-        touchZoom: false,          
-        scrollWheelZoom: false,    
-        doubleClickZoom: false,    
-        boxZoom: false,
-        keyboard: false,
-        attributionControl: false  
-    }).setView(routePoints.length > 0 ? routePoints[0] : [0, 0], 15);
-    
-    activeMaps[taskKey] = map;
-
-    L.polyline(routePoints, {color: '#e74c3c', weight: 6, opacity: 0.8}).addTo(map);
-
-    originalFlowerPoints.forEach((p, i) => {
-        let offsetCoord = window.getSecureOffsetCoord(`${p.lat},${p.lon}`);
-        let oParts = offsetCoord.split(',');
-        const numberIcon = L.divIcon({
-            className: 'custom-number-icon',
-            html: `<div style="background:#2980b9; color:white; border-radius:50%; width:24px; height:24px; display:flex; justify-content:center; align-items:center; font-weight:bold; font-size:12px; border:2px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">${i+1}</div>`,
-            iconSize: [24, 24],
-            iconAnchor: [12, 12]
-        });
-        L.marker([parseFloat(oParts[0]), parseFloat(oParts[1])], {icon: numberIcon}).addTo(map);
-    });
-
-    const bounds = L.latLngBounds(routePoints.length > 0 ? routePoints : [[0,0]]);
-    map.fitBounds(bounds, { padding: [30, 30] });
-
-    setTimeout(() => { map.invalidateSize(); }, 100);
-};
-
-window.copyAllTaskCoords = function(taskKey) {
-    const task = localFbTasks[taskKey];
-    if (!task || !task.enrollees) {
-        return alert("目前沒有可複製的座標喔！");
-    }
-
-    let allCoords = [];
-    Object.values(task.enrollees).forEach(en => {
-        if (en.status >= 1 && en.assignedCoords) {
-            allCoords = allCoords.concat(en.assignedCoords);
-        }
-    });
-
-    if (allCoords.length === 0) {
-        return alert("這團目前還沒有派發任何座標喔！");
-    }
-
-    const coordsText = allCoords.join('\n');
-    window.safeCopyToClipboard(coordsText, `成功！已複製 ${allCoords.length} 個純座標！`);
-};
-
-let activePoolMaps = {}; 
-
-window.togglePoolMap = function(zoneName, safeZoneId) {
-    const containerId = `pool_map_container_${safeZoneId}`;
-    const container = document.getElementById(containerId);
-    if (container.style.display === 'none') {
-        container.style.display = 'block';
-        renderPoolMap(zoneName, containerId);
-    } else {
-        container.style.display = 'none';
-    }
-};
-
-window.renderPoolMap = function(zoneName, containerId) {
-    let poolData = localFbPoolData[zoneName];
-    if (!poolData || !poolData.coords || poolData.coords.length === 0) return;
-
-    let coords = poolData.coords;
-    let points = [];
-
-    coords.forEach(c => {
-        let parts = c.coordString.split(',');
-        points.push([parseFloat(parts[0]), parseFloat(parts[1])]);
-    });
-
-    if (activePoolMaps[containerId]) { 
-        activePoolMaps[containerId].remove();
-        delete activePoolMaps[containerId];
-    }
-
-    const map = L.map(containerId, {
-        attributionControl: false
-    }).setView(points[0], 15);
-    
-    activePoolMaps[containerId] = map;
-
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        opacity: 0.5 
-    }).addTo(map);
-
-    L.polyline(points, {color: '#7f8c8d', weight: 3, opacity: 0.8, dashArray: '5, 5'}).addTo(map);
-
-    coords.forEach((c, i) => {
-        let bgColor = '#27ae60'; 
-        if (c.status === 1) bgColor = '#f39c12'; 
-        else if (c.status === 2) bgColor = '#e74c3c'; 
-
-        const statusIcon = L.divIcon({
-            className: 'custom-status-icon',
-            html: `<div style="background:${bgColor}; color:white; border-radius:50%; width:24px; height:24px; display:flex; justify-content:center; align-items:center; font-weight:bold; font-size:11px; border:2px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.5);">${i+1}</div>`,
-            iconSize: [24, 24],
-            iconAnchor: [12, 12]
-        });
-
-        let statusText = c.status === 0 ? '空閒待命' : (c.status === 1 ? `派發中 (${c.assignedTo || '未知'})` : '冷卻中');
-
-        L.marker(points[i], {icon: statusIcon})
-         .addTo(map)
-         .bindPopup(`<b>第 ${i+1} 個點位</b><br>狀態: ${statusText}<br>座標: ${c.coordString}`);
-    });
-
-    const bounds = L.latLngBounds(points);
-    map.fitBounds(bounds, { padding: [30, 30] });
-
-    setTimeout(() => { map.invalidateSize(); }, 100);
-};
-
-window.createGPXLink = function(taskKey, format = 'standard') {
-    let task = localFbTasks[taskKey];
-    if(!task) return alert("找不到此任務！");
-
-    let baseUrl = window.location.href.split('?')[0].split('#')[0];
-    let shareUrl = `${baseUrl}?autoDownload=${taskKey}&format=${format}`;
-    let formatName = format === 'flashman' ? 'Flashman' : (format === 'anyTo' ? 'AnyTo' : (format === 'iTools' ? '魅影' : '標準版'));
-    
-    window.safeCopyToClipboard(shareUrl, `${formatName} 專屬連結已複製！\n\n請直接將以下網址分享\n${shareUrl}`);
-};
-
-window.copyAllGPXLinks = function(taskKey) {
-    let task = localFbTasks[taskKey];
-    if(!task) return alert("找不到此任務！");
-
-    let baseUrl = window.location.href.split('?')[0].split('#')[0];
-    
-    let textToCopy = `【${task.title}】專屬防小人路線下載：\n\n`;
-    textToCopy += `標準版：\n${baseUrl}?autoDownload=${taskKey}&format=standard\n\n`;
-    textToCopy += `AnyTo：\n${baseUrl}?autoDownload=${taskKey}&format=anyTo\n\n`;
-    textToCopy += `魅影版：\n${baseUrl}?autoDownload=${taskKey}&format=iTools\n\n`;
-    textToCopy += `Flashman：\n${baseUrl}?autoDownload=${taskKey}&format=flashman`;
-
-    window.safeCopyToClipboard(textToCopy, `成功！已將 4 種格式的下載連結打包複製！\n\n您可以直接到 LINE 貼上給群友了。`);
-};
-
-window.reportCooldownForceBloom = async function(taskKey, eKey, idx, coordString, h = 23, m = 0) {
-    if(coordString === '處理中') return alert("座標正在處理中，請稍候！");
-    
-    let durationMs = (h * 3600000) + (m * 60000);
-    let syncedNow = getSyncedTime();
-    let newEndTime = syncedNow + durationMs;
-
-    try {
-        let poolSnap = await fbPoolRef.once('value'); let pools = poolSnap.val();
-        if(!pools) return alert("水庫異常！");
-        let taskSnap = await fbTasksRef.child(taskKey).once('value'); let task = taskSnap.val();
-        let person = task.enrollees[eKey];
         
-        let oldZone = null, oldIndex = -1, oldLat = 0, oldLng = 0;
-        
-        let now = getSyncedTime(); 
-
-        for(let z in pools) {
-            let coords = pools[z].coords || [];
-            for(let i=0; i<coords.length; i++) {
-                let c = coords[i];
-                if (c && c.coordString) {
-                    let parts = c.coordString.split(',');
-                    
-                    if (c.coordString === coordString && oldZone === null) {
-                        oldZone = z; oldIndex = i; 
-                        oldLat = parseFloat(parts[0]); oldLng = parseFloat(parts[1]);
-                    }
-                }
-            }
-        }
-        
-        let newCoordObj = null, newZone = null, newIndex = -1, minDist = Infinity;
-        for(let z in pools) {
-            if(pools[z] && pools[z].isActive !== false && pools[z].coords) {
-                for (let i = 0; i < pools[z].coords.length; i++) {
-                    let c = pools[z].coords[i];
-                    let isActuallyExpired = (c.status === 2 && c.endTime && c.endTime < now);
-                    if (c && (c.status === 0 || isActuallyExpired) && c.coordString) {
-                        let parts = c.coordString.split(',');
-                        let d = getDistance(oldLat, oldLng, parseFloat(parts[0]), parseFloat(parts[1]));
-                        if (d < minDist) { minDist = d; newCoordObj = c; newZone = z; newIndex = i; }
-                    }
-                }
-            }
-        }
-        
-        let updates = {};
-        if(oldZone !== null) {
-            updates[`/ForceBloom_Pool/${oldZone}/coords/${oldIndex}/status`] = 2;
-            updates[`/ForceBloom_Pool/${oldZone}/coords/${oldIndex}/endTime`] = newEndTime;
-        }
-        
-        let myCoords = [...(person.assignedCoords || [])];
-        if (newCoordObj) {
-            myCoords[idx] = newCoordObj.coordString;
-            updates[`/ForceBloom_Tasks/${taskKey}/enrollees/${eKey}/assignedCoords`] = myCoords;
-            updates[`/ForceBloom_Pool/${newZone}/coords/${newIndex}/status`] = 1;
-            updates[`/ForceBloom_Pool/${newZone}/coords/${newIndex}/assignedTo`] = person.nickname;
-            person.assignedCoords = myCoords; 
-        } else {
-            myCoords.splice(idx, 1);
-            updates[`/ForceBloom_Tasks/${taskKey}/enrollees/${eKey}/assignedCoords`] = myCoords;
-            updates[`/ForceBloom_Tasks/${taskKey}/enrollees/${eKey}/amount`] = person.amount - 1;
-            person.assignedCoords = myCoords; 
-        }
-
-        let newFullRoute = [], allAssignedNodes = [];
-        Object.values(task.enrollees).forEach(en => {
-            if (en.status >= 1 && en.assignedCoords) {
-                en.assignedCoords.forEach(cStr => {
-                    let parts = cStr.split(',');
-                    allAssignedNodes.push({ coordString: cStr, lat: parseFloat(parts[0]), lng: parseFloat(parts[1]) });
-                });
-            }
-        });
-
-        if (allAssignedNodes.length > 0) {
-            let unvisited = [...allAssignedNodes];
-            let currentNode = unvisited.shift(); 
-            newFullRoute.push(currentNode.coordString);
-            
-            while (unvisited.length > 0) {
-                let bestIdx = 0, minDist = Infinity;
-                for (let i = 0; i < unvisited.length; i++) {
-                    let d = getDistance(currentNode.lat, currentNode.lng, unvisited[i].lat, unvisited[i].lng);
-                    if (d < minDist) { minDist = d; bestIdx = i; }
-                }
-                
-                let targetNode = unvisited.splice(bestIdx, 1)[0];
-                
-                let cStr = targetNode.coordString;
-                if (newFullRoute.length === 0 || newFullRoute[newFullRoute.length - 1] !== cStr) {
-                    newFullRoute.push(cStr); 
-                }
-                currentNode = targetNode; 
-            }
-        }
-        
-        updates[`/ForceBloom_Tasks/${taskKey}/fullRoute`] = newFullRoute;
-        
-        await database.ref().update(updates);
-        
-        if (newCoordObj) alert(`回報成功！原座標已進入冷卻。\n系統已補發新座標：[${newCoordObj.coordString}]\n(防小人路線圖已重新縫合，群友下載會直接拿到新路線)`);
-        else alert(`回報成功！原座標已進入冷卻。\n但水庫已空，自動扣除該朵數量。(路線圖已重新縫合)`);
-    } catch(err) { console.error(err); alert("發生錯誤：" + err.message); }
-};
-
-window.toggleTaskActive = function(taskKey, currentStatus) {
-    let newStatus = !currentStatus;
-    let msg = newStatus ? "確定要「重新開放」此任務嗎？\n群友將可以再次看到並報名此任務。" : "確定要「暫停」此任務嗎？\n暫停後，一般群友將完全看不到此任務，您可以在後台隨時重新開放。";
-    
-    if(confirm(msg)) {
-        fbTasksRef.child(taskKey).update({ isActive: newStatus }).then(() => {
-            let actionStr = newStatus ? "已重新開放" : "已暫停";
-            console.log(`任務 ${taskKey} ${actionStr}`);
-        });
+        gpxContent += `    </trkseg>\n  </trk>\n</gpx>`;
+        return gpxContent;
     }
-};
 
-window.toggleZoneActive = function(zoneName, currentStatus) {
-    let msg = currentStatus 
-        ? `確定要「停用」[${zoneName}] 嗎？\n停用後，一鍵派發與異常換點將【不會】從這裡抓取座標。` 
-        : `確定要「啟用」[${zoneName}] 嗎？\n啟用後，派發系統將恢復從這裡抓取空閒座標。`;
-        
-    if (confirm(msg)) {
-        fbPoolRef.child(zoneName).update({ isActive: !currentStatus });
-    }
-};
+    // --- 核心上傳邏輯：移除資料夾建立，直接上傳至帳號根目錄 ---
+    async function generateShareLink() {
+        if (generatedPoints.length === 0) return alert("請先生成路線！");
 
-window.processAutoDownloadUrl = function(taskKey, taskData) {
-    const href = window.location.href;
-    const autoTaskMatch = href.match(/[?&]autoDownload=([^&#]+)/);
-    const autoTask = autoTaskMatch ? autoTaskMatch[1] : null;
-
-    const formatMatch = href.match(/[?&]format=([^&#]+)/);
-    const autoFormat = formatMatch ? formatMatch[1] : 'standard';
-
-    if (autoTask === taskKey && !window._hasProcessedAutoDownload) {
-        window._hasProcessedAutoDownload = true; 
-
-        // 🌟 防呆：結案後連結立刻失效並拒絕下載
-        if (taskData.isCompleted) {
-            alert("⚠️ 路線下載失敗！\n此任務已經結案，專屬防小人路線下載連結已失效。");
-            try {
-                let cleanHref = window.location.href.replace(/[?&]autoDownload=[^&#]+/, '').replace(/[?&]format=[^&#]+/, '');
-                cleanHref = cleanHref.replace(/[?&]$/, '');
-                window.history.replaceState({}, document.title, cleanHref);
-            } catch(e) {}
+        // 讀取使用者填寫的 Token
+        const myGofileToken = document.getElementById('userGofileToken').value.trim();
+        if (!myGofileToken) {
+            alert("請先完成第 3 步驟，填寫您的 Gofile API Token！\n（您可以點擊教學中的連結去免費註冊取得）");
             return;
         }
 
-        const ua = navigator.userAgent || navigator.vendor || window.opera;
-        if (ua.indexOf("Line") > -1 || ua.indexOf("FBAN") > -1 || ua.indexOf("FBAV") > -1 || ua.indexOf("Instagram") > -1) {
-            alert("內建瀏覽器封鎖了自動下載功能！\n\n請點擊畫面角落的選單\n選擇「以預設瀏覽器開啟」或「在 Safari / Chrome 開啟」\n跳轉後系統將為您自動繼續下載路線！");
-            return;
-        }
+        // 自動儲存到瀏覽器 localStorage
+        localStorage.setItem("user_gofile_api_token", myGofileToken);
 
-        setTimeout(() => {
-            let overlay = document.createElement('div');
-            overlay.id = 'autoDownloadModal';
-            overlay.style.cssText = `
-                position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-                background: rgba(0,0,0,0.7); z-index: 999999;
-                display: flex; justify-content: center; align-items: center;
-                backdrop-filter: blur(4px); font-family: sans-serif;
-            `;
+        const shareBtn = document.getElementById('generateLinkBtn');
+        shareBtn.disabled = true;
+        shareBtn.innerHTML = '<span class="material-symbols-rounded">cloud_upload</span> 正在上傳至您的空間...';
+        shareBtn.style.opacity = "0.7";
 
-            let modalBox = document.createElement('div');
-            modalBox.style.cssText = `
-                background: white; padding: 30px 20px; border-radius: 16px;
-                text-align: center; max-width: 85%; width: 320px;
-                box-shadow: 0 10px 25px rgba(0,0,0,0.3);
-            `;
+        const shareContainer = document.getElementById('shareLinkContainer');
+        const urlInput = document.getElementById('shareUrlInput');
+        const hintDiv = document.getElementById('shareHint');
+        
+        shareContainer.style.display = 'block';
+        urlInput.value = "[系統] 正在呼叫 API，將四種模擬格式上傳至您的專屬雲端帳號根目錄...";
 
-            modalBox.innerHTML = `
-                <span class="material-symbols-outlined" style="font-size: 3.5rem; display:block; margin-bottom: 10px; color:#27ae60;">download</span>
-                <h2 style="margin: 0 0 10px 0; color: #2c3e50; font-size: 1.4em;">專屬防小人路線</h2>
-                <p style="color: #7f8c8d; font-size: 0.95em; margin-bottom: 25px; line-height: 1.5;">
-                    任務：<b>${taskData.title}</b><br>
-                    格式：<span style="color:#e67e22; font-weight:bold;">${autoFormat.toUpperCase()}</span>
-                </p>
-                <button id="confirmBtn_${taskKey}" style="background: #27ae60; color: white; border: none; padding: 14px 20px; font-size: 1.1em; font-weight: bold; border-radius: 8px; width: 100%; cursor: pointer; margin-bottom: 12px; box-shadow: 0 4px 6px rgba(39,174,96,0.3); display:inline-flex; align-items:center; justify-content:center; gap:6px;">
-                    <span class="material-symbols-outlined" style="font-size: 1.1em; vertical-align: middle;">download</span> 立即下載 GPX
-                </button>
-                <button id="cancelBtn_${taskKey}" style="background: transparent; color: #95a5a6; border: none; padding: 10px; font-size: 0.9em; cursor: pointer; text-decoration: underline;">
-                    稍後再說
-                </button>
-            `;
+        let baseName = document.getElementById('customFileName').value.trim() || "防小人路線";
+        let uniqueStamp = new Date().getTime();
 
-            overlay.appendChild(modalBox);
-            document.body.appendChild(overlay);
+        const formats = [
+            { id: 'joysticks', name: 'joysticks', suffix: '_Joysticks' },
+            { id: 'anyTo', name: 'AnyTo', suffix: '_AnyTo' },
+            { id: 'iTools', name: '魅影版', suffix: '_iTools' },
+            { id: 'flashman', name: 'Flashman', suffix: '_Flashman' }
+        ];
 
-            document.getElementById(`confirmBtn_${taskKey}`).addEventListener('click', function() {
-                if(typeof window.downloadGPX === 'function') {
-                    window.downloadGPX(autoTask, autoFormat, true);
-                }
-                document.body.removeChild(overlay);
-                cleanUrl();
-            });
-
-            document.getElementById(`cancelBtn_${taskKey}`).addEventListener('click', function() {
-                document.body.removeChild(overlay);
-                cleanUrl();
-            });
-
-            function cleanUrl() {
-                try {
-                    let cleanHref = window.location.href.replace(/[?&]autoDownload=[^&#]+/, '').replace(/[?&]format=[^&#]+/, '');
-                    cleanHref = cleanHref.replace(/[?&]$/, '');
-                    window.history.replaceState({}, document.title, cleanHref);
-                } catch(e) {
-                    console.log("網址列清理失敗 (可能在本地端運行)", e);
-                }
+        try {
+            // --- 動作 1：取得最佳上傳伺服器節點 ---
+            const serverRes = await fetch('https://api.gofile.io/servers', { method: 'GET' });
+            if (!serverRes.ok) throw new Error(`無法取得伺服器節點 (Status: ${serverRes.status})`);
+            
+            const serverData = await serverRes.json();
+            if (serverData.status !== 'ok' || !serverData.data || !serverData.data.servers.length) {
+                throw new Error('Gofile 雲端伺服器目前暫時無法連接');
             }
-        }, 500); 
-    }
-};
+            const uploadServer = serverData.data.servers[0].name;
 
-window.renderForceBloomTasks = function() {
-    try {
-        if(window.UIMemory) window.UIMemory.capture(); 
-        
-        const container = document.getElementById('forceBloomTasksContainer');
-        const completedContainer = document.getElementById('completedForceBloomTasksContainer'); 
-        if(!container) return;
-        
-        container.innerHTML = '';
-        if(completedContainer) completedContainer.innerHTML = '';
-        
-        let hasTasks = false, hasCompletedTasks = false; 
-        let user = firebase.auth().currentUser, isSuperAdmin = user && user.uid === SUPER_ADMIN_UID;
+            let fileLinksList = "";
 
-        let taskKeys = Object.keys(localFbTasks);
-        let taskArray = taskKeys.map(key => ({ key, ...localFbTasks[key] }));
-        taskArray.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            // --- 動作 2：逐一打包上傳四種格式至根目錄 ---
+            for (let fmt of formats) {
+                const gpxData = getGPXString(fmt.id, baseName);
+                const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
+                
+                const formData = new FormData();
+                const fileName = `${baseName}${fmt.suffix}_${uniqueStamp}.gpx`;
+                formData.append('file', blob, fileName);
+                formData.append('token', myGofileToken); 
 
-        taskArray.forEach(task => {
-            const key = task.key;
-            if(!task) return;
-            
-            let creatorId = task.creatorUid || '';
-            let isCreatorOrAdmin = user && (user.uid === creatorId || isSuperAdmin);
-
-            if (!task.isActive && !isCreatorOrAdmin) return; 
-
-            let card = document.createElement('div');
-            card.className = 'point-card'; 
-            
-            let inactiveStyle = !task.isActive ? 'opacity: 0.6; filter: grayscale(100%);' : '';
-            card.style.cssText = `border-left: 5px solid ${task.isCompleted ? '#7f8c8d' : (task.isActive ? '#e74c3c' : '#bdc3c7')}; padding: 0; ${inactiveStyle}`;
-            if(task.isCompleted) card.style.opacity = "0.75"; 
-
-            let hasAdminPrivilege = task.isCompleted ? isSuperAdmin : isCreatorOrAdmin;
-            let enrolleeHtml = '', totalReq = 0, isDispatched = false; 
-            let isEnrolledInTask = false; 
-
-            if(task.enrollees && typeof task.enrollees === 'object') {
-                Object.values(task.enrollees).forEach(en => { 
-                    if(en && en.status >= 1) isDispatched = true; 
-                    if(user && en.uid === user.uid && en.status !== -1) isEnrolledInTask = true;
+                const uploadRes = await fetch(`https://${uploadServer}.gofile.io/contents/uploadfile`, { 
+                    method: 'POST', 
+                    body: formData 
                 });
-
-                Object.keys(task.enrollees).forEach(eKey => {
-                    const en = task.enrollees[eKey];
-                    if(!en || en.status === -1) return;
-                    let amt = parseInt(en.amount) || 0;
-                    if (amt === 0) return;
-
-                    let isMyRecord = (user && en.uid === user.uid);
-                    let deleteBtn = (hasAdminPrivilege && !task.isCompleted) ? `<button style="padding:4px 8px; background:#c0392b; color:white; border:none; border-radius:4px; cursor:pointer;" onclick="event.stopPropagation(); removeEnrollee('${key}', '${eKey}')"><span class="material-symbols-outlined" style="font-size:1.1em;">delete</span></button>` : '';
-
-                    for(let i = 0; i < amt; i++) {
-                        let statusText = "", statusColor = "", actionBtnHtml = ""; 
-                        if (en.status === 0) { 
-                            statusText = `<span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">pending_actions</span> 尚未分配`; statusColor = "#e74c3c"; 
-                        } else if (en.status === 1) {
-                            let assigned = (en.assignedCoords && en.assignedCoords[i]) ? en.assignedCoords[i] : '處理中';
-                            if (!isMyRecord && !hasAdminPrivilege) {
-                                statusText = `<span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">location_off</span> [座標已隱藏]`; statusColor = "#2980b9";
-                            } else {
-                                let exactCoord = assigned;
-                                let isPointDone = false;
-                                if (assigned !== '處理中' && localFbPoolData) {
-                                    for (let z in localFbPoolData) {
-                                        if (localFbPoolData[z].coords) {
-                                            let p = localFbPoolData[z].coords.find(c => c.coordString === assigned);
-                                            if (p && p.status === 2) isPointDone = true;
-                                        }
-                                    }
-                                }
-
-                                if (isPointDone) {
-                                    statusText = `<span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">location_on</span> [${exactCoord}] <span style="color:#27ae60;">(<span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">check_circle</span> 已開花)</span>`; statusColor = "#2980b9";
-                                } else {
-                                    statusText = `<span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">location_on</span> [${exactCoord}]`; statusColor = "#2980b9";
-                                    let copyBtn = assigned !== '處理中' ? `<button class="btn-action" style="background:var(--input-bg); color:var(--text-color); border:1px solid var(--input-border); display:inline-flex; align-items:center; gap:4px;" onclick="event.stopPropagation(); window.safeCopyToClipboard('${exactCoord}', '座標複製成功！')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">content_copy</span> 複製</button>` : '';
-                                    let singleBtn = (!task.isCompleted) ? `<button class="btn-action" style="background:#27ae60; color:white; border:none; display:inline-flex; align-items:center; gap:4px;" onclick="event.stopPropagation(); markForceBloomDone('${key}', '${eKey}', ${i}, 'single')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">check_circle</span> 單點回報</button>` : '';
-                                    let allBtn = (!task.isCompleted && amt > 1) ? `<button class="btn-action" style="background:#8e44ad; color:white; border:none; display:inline-flex; align-items:center; gap:4px;" onclick="event.stopPropagation(); markForceBloomDone('${key}', '${eKey}', null, 'all')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">done_all</span> 全部回報</button>` : '';
-                                    let reportBtn = (!task.isCompleted && assigned !== '處理中') ? `<button class="btn-action btn-full-width" style="background:#e67e22; color:white; border:none; display:inline-flex; align-items:center; justify-content:center; gap:4px;" onclick="event.stopPropagation(); openReportSheet('${key}', '${eKey}', ${i}, '${assigned}')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">report_problem</span> 異常換點</button>` : '';
-                                    actionBtnHtml = `<div class="enrollee-action-group">${copyBtn}${singleBtn}${allBtn}${reportBtn}</div>`;
-                                }
-                            }
-                        } else { statusText = `<span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">task_alt</span> 已完成`; statusColor = "#27ae60"; }
-                        
-                        enrolleeHtml += `<div style="padding: 12px 8px; border-bottom: 1px dashed var(--input-border);">
-                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
-                                <b style="font-size:1.1em;">${en.nickname} (${i+1}/${amt})</b> 
-                                ${i === 0 ? deleteBtn : ''}
-                            </div>
-                            <div style="color:${statusColor}; font-weight:bold; font-size: 0.95em; margin-bottom: 6px;">${statusText}</div>
-                            ${actionBtnHtml}
-                        </div>`;
-                        totalReq++;
-                    }
-                });
-            }
-
-            let targetHtml = '', timeHtml = '', adminPanelHtml = '';
-            
-            if (hasAdminPrivilege) {
-                targetHtml = `<span style="font-size:0.9em; color:var(--meta-text); font-weight:bold; background:var(--input-bg); padding:6px 10px; border-radius:6px; border:1px solid var(--input-border); display:inline-flex; align-items:center;">目標: <input type="number" id="taskTarget_${key}" style="width:55px; font-size:1em; border:none; border-bottom:1px solid #c0392b; background:transparent; font-weight:bold; color:#c0392b; outline:none; text-align:center; margin:0 5px;" value="${task.targetAmount || 0}" onchange="updateFbTask('${key}', 'targetAmount', parseInt(this.value) || 0)" ${task.isCompleted ? 'disabled' : ''}>朵</span>`;
-                timeHtml = `<span style="font-size:0.9em; color:var(--meta-text); font-weight:bold; background:var(--input-bg); padding:6px 10px; border-radius:6px; border:1px solid var(--input-border); display:inline-flex; align-items:center;">時間: <input type="text" id="taskTime_${key}" style="width:70px; font-size:1em; border:none; border-bottom:1px solid #2980b9; background:transparent; font-weight:bold; color:#2980b9; outline:none; text-align:center; margin:0 5px;" placeholder="例:2000" value="${task.exportTime || ''}" onchange="updateFbTask('${key}', 'exportTime', this.value)" ${task.isCompleted ? 'disabled' : ''}></span>`;
                 
-                let completeBtn = task.isCompleted 
-                    ? `<button class="btn-add-wish" style="margin:0; background: #7f8c8d; font-size: 0.9em; display:inline-flex; align-items:center; justify-content:center; gap:4px;" onclick="event.stopPropagation(); toggleTaskCompletion('${key}', true)"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">undo</span> 撤銷結案</button>`
-                    : `<button class="btn-add-wish" style="margin:0; background: #27ae60; font-size: 0.9em; display:inline-flex; align-items:center; justify-content:center; gap:4px;" onclick="event.stopPropagation(); toggleTaskCompletion('${key}', false)"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">done_all</span> 標記結案</button>`;
-
-                adminPanelHtml = `
-                <details id="details_admin_${key}" class="admin-action-panel" style="margin-bottom:15px; background:var(--input-bg); padding:10px; border-radius:8px;" onclick="event.stopPropagation();">
-                    <summary style="font-weight:bold; color:#8e44ad; cursor:pointer; list-style:none; text-align:center; font-size:0.9em; display:flex; justify-content:center; align-items:center; gap:4px;"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">settings_suggest</span> 管理員操作選項</summary>
-                    <div class="share-btn-group" style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
-                        ${completeBtn}
-                        <button class="btn-add-wish" style="margin:0; background: #8e44ad; font-size: 0.9em; flex:1; display:inline-flex; align-items:center; justify-content:center; gap:4px;" onclick="event.stopPropagation(); copyTaskInvite('${key}')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">share</span> 複製邀請</button>
-                        <button class="btn-add-wish" style="margin:0; background: #34495e; font-size: 0.9em; flex:1; display:inline-flex; align-items:center; justify-content:center; gap:4px;" onclick="event.stopPropagation(); copyAllTaskCoords('${key}')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">content_copy</span> 複製全座標</button>
-                        ${!task.isCompleted ? `<button class="btn-delete-wish btn-full-width" style="margin:0; padding:10px; font-size: 0.9em; flex:1; display:inline-flex; align-items:center; justify-content:center; gap:4px;" onclick="event.stopPropagation(); deleteForceBloomTask('${key}')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">delete_forever</span> 刪除任務</button>` : ''}
-                    </div>
-                </details>`;
-            } else {
-                let targetText = task.targetAmount > 0 ? `<span style="color:#c0392b; margin:0 4px;">${task.targetAmount}</span>` : `<span style="margin:0 4px;">不限</span>`;
-                targetHtml = `<span style="font-size:0.9em; color:var(--meta-text); font-weight:bold; background:var(--input-bg); padding:6px 10px; border-radius:6px; border:1px solid var(--input-border); display:inline-flex; align-items:center;">目標: ${targetText} 朵</span>`;
-                let timeText = task.exportTime ? `<span style="color:#2980b9; margin:0 4px;">${task.exportTime}</span>` : `<span style="margin:0 4px;">未設定</span>`;
-                timeHtml = `<span style="font-size:0.9em; color:var(--meta-text); font-weight:bold; background:var(--input-bg); padding:6px 10px; border-radius:6px; border:1px solid var(--input-border); display:inline-flex; align-items:center;">時間: ${timeText}</span>`;
-            }
-
-            let canViewMapAndDownload = isEnrolledInTask || hasAdminPrivilege;
-            let routeBtn = (isDispatched && canViewMapAndDownload) ? `<button class="btn-add-wish" style="margin-top:15px; width:100%; background: #27ae60; font-size: 1.1em; padding:12px 0; display:inline-flex; align-items:center; justify-content:center; gap:6px;" onclick="event.stopPropagation(); toggleTaskMap('${key}')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">map</span> 查看 / 隱藏路線圖</button>` : '';
-
-            let isFull = (task.targetAmount > 0 && totalReq >= task.targetAmount);
-            let inputHtml = '';
-            
-            if (isDispatched) inputHtml = `<div style="margin-top:15px; text-align:center; color:var(--meta-text); font-weight: bold; padding: 12px; background: var(--input-bg); border-radius: 8px; display:flex; align-items:center; justify-content:center; gap:6px;"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">block</span> 此任務已派發座標，停止報名</div>`;
-            else if (isFull) inputHtml = `<div style="margin-top:15px; text-align:center; color:#e74c3c; font-weight: bold; padding: 12px; background: rgba(231,76,60,0.1); border-radius: 8px; display:flex; align-items:center; justify-content:center; gap:6px;"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">block</span> 已達目標朵數，停止報名</div>`;
-            else {
-                let currentUserName = document.getElementById('displayUserName') ? document.getElementById('displayUserName').innerText : '';
-                if(currentUserName === '載入中...' || currentUserName === '群友') currentUserName = '';
-
-                inputHtml = `
-                <div class="enroll-group">
-                    <input type="text" id="fbNick_${key}" placeholder="報名暱稱" value="${currentUserName}" class="edit-input" style="flex:2;" onclick="event.stopPropagation();">
-                    <input type="number" id="fbAmount_${key}" placeholder="數量" class="edit-input" style="flex:1;" onclick="event.stopPropagation();">
-                    <button class="btn-add-wish" style="background: #2980b9; margin:0; flex:1;" onclick="event.stopPropagation(); enrollForceBloom('${key}')">確認報名</button>
-                </div>
-                `;
-            }
-
-            let dispatchBtn = '';
-            let shareLinksHtml = '';
-
-            if(hasAdminPrivilege) {
-                if (!isDispatched && !task.isCompleted) {
-                    dispatchBtn = `<button class="btn-add-wish" style="margin-top:15px; width:100%; background:#f39c12; font-size:1.1em; padding: 12px 0; display:flex; align-items:center; justify-content:center; gap:6px;" onclick="event.stopPropagation(); dispatchForceBloom('${key}', ${totalReq})"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">send</span> 一鍵派發座標 (共 ${totalReq} 朵)</button>`;
-                }
-            }
-
-            if (isDispatched && canViewMapAndDownload) {
-                let currentCD = task.selectedCooldown || '';
-                let cdSettingHtml = `<h4 style="margin-top:0; margin-bottom:12px; color:#27ae60; text-align:center; display:flex; align-items:center; justify-content:center; gap:4px;"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">download</span> 點擊下載專屬路線 (中心偏移版)：</h4>`;
+                if (!uploadRes.ok) throw new Error(`上傳被拒絕 (Status: ${uploadRes.status})`);
+                const uploadData = await uploadRes.json();
+                if (uploadData.status !== 'ok') throw new Error(`檔案上傳失敗 (${uploadData.status})`);
                 
-                if (hasAdminPrivilege && !task.isCompleted) {
-                    cdSettingHtml = `
-                    <h4 style="margin-top:0; margin-bottom:12px; color:#d35400; text-align:center; display:flex; align-items:center; justify-content:center; gap:4px;"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">check_circle</span> 派發完成！請選擇全團冷卻：</h4>
-                    <select id="setCooldown_${key}" class="edit-input" style="width:100%; border:1px solid #d35400; font-weight:bold; color:#d35400; margin-bottom:15px;" onchange="event.stopPropagation(); setTaskCooldown('${key}', this.value)" onclick="event.stopPropagation();">
-                        <option value="">-- 選擇冷卻時間 --</option>
-                        <option value="23" ${currentCD == '23' ? 'selected' : ''}>23 小時</option>
-                        <option value="6" ${currentCD == '6' ? 'selected' : ''}>6 小時</option>
-                        <option value="3" ${currentCD == '3' ? 'selected' : ''}>3 小時</option>
-                    </select>`;
-                }
-
-                let adminShareTools = hasAdminPrivilege ? `
-                    <div style="margin-top:15px; border-top:1px dashed #f39c12; padding-top:10px;">
-                        <h4 style="margin-top:0; margin-bottom:8px; color:#f39c12; text-align:center; font-size:0.9em; display:flex; align-items:center; justify-content:center; gap:4px;"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">share</span> 管理員分享工具 (防小人路線)：</h4>
-                        <div style="display:flex; flex-wrap:wrap; gap:8px;">
-                            <button class="btn-add-wish" style="margin:0; flex:1; background:#27ae60; padding:8px 0; font-size:0.85em; display:flex; align-items:center; justify-content:center; gap:2px;" onclick="event.stopPropagation(); createGPXLink('${key}', 'standard')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">link</span> 標</button>
-                            <button class="btn-add-wish" style="margin:0; flex:1; background:#2980b9; padding:8px 0; font-size:0.85em; display:flex; align-items:center; justify-content:center; gap:2px;" onclick="event.stopPropagation(); createGPXLink('${key}', 'anyTo')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">link</span> Any</button>
-                            <button class="btn-add-wish" style="margin:0; flex:1; background:#8e44ad; padding:8px 0; font-size:0.85em; display:flex; align-items:center; justify-content:center; gap:2px;" onclick="event.stopPropagation(); createGPXLink('${key}', 'iTools')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">link</span> 魅</button>
-                            <button class="btn-add-wish" style="margin:0; flex:1; background:#e67e22; padding:8px 0; font-size:0.85em; display:flex; align-items:center; justify-content:center; gap:2px;" onclick="event.stopPropagation(); createGPXLink('${key}', 'flashman')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">link</span> Flash</button>
-                        </div>
-                        <button class="btn-add-wish btn-full-width" style="margin:8px 0 0 0; width:100%; background:#34495e; padding:10px 0; font-size:0.9em; font-weight:bold; display:flex; align-items:center; justify-content:center; gap:6px;" onclick="event.stopPropagation(); copyAllGPXLinks('${key}')"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">inventory_2</span> 一鍵複製所有防小人連結 (LINE用)</button>
-                    </div>
-                ` : '';
-
-                shareLinksHtml = `
-                <div style="margin-top:15px; padding: 15px; background: rgba(243, 156, 18, 0.1); border: 2px dashed #f39c12; border-radius: 8px;">
-                    ${cdSettingHtml}
-                    <div class="share-btn-group" style="display:flex; flex-wrap:wrap; gap:8px;">
-                        <button class="btn-add-wish" style="margin:0; flex:1; background:#27ae60; padding:12px 0; font-size:0.9em; display:flex; align-items:center; justify-content:center; gap:4px;" onclick="event.stopPropagation(); downloadGPX('${key}', 'standard', false)"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">download</span> 標準版</button>
-                        <button class="btn-add-wish" style="margin:0; flex:1; background:#2980b9; padding:12px 0; font-size:0.9em; display:flex; align-items:center; justify-content:center; gap:4px;" onclick="event.stopPropagation(); downloadGPX('${key}', 'anyTo', false)"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">download</span> AnyTo</button>
-                        <button class="btn-add-wish" style="margin:0; flex:1; background:#8e44ad; padding:12px 0; font-size:0.9em; display:flex; align-items:center; justify-content:center; gap:4px;" onclick="event.stopPropagation(); downloadGPX('${key}', 'iTools', false)"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">download</span> 魅影版</button>
-                        <button class="btn-add-wish" style="margin:0; flex:1; background:#e67e22; padding:12px 0; font-size:0.9em; display:flex; align-items:center; justify-content:center; gap:4px;" onclick="event.stopPropagation(); downloadGPX('${key}', 'flashman', false)"><span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">download</span> Flashman</button>
-                    </div>
-                    ${adminShareTools}
-                </div>`;
+                // 串接各檔案的單獨下載網址，方便轉發
+                fileLinksList += `📌 ${fmt.name} 格式：\n${uploadData.data.downloadPage}\n\n`;
+                
+                // 稍微延遲 1 秒，防 API 速度過快爆量限制
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
-
-            let titlePrefix = task.isCompleted ? '<span class="material-symbols-outlined" style="font-size: 1.1em; vertical-align: middle;">task_alt</span>' : (task.isActive ? '<span class="material-symbols-outlined" style="font-size: 1.1em; vertical-align: middle;">my_location</span>' : '<span class="material-symbols-outlined" style="font-size: 1.1em; vertical-align: middle;">pause_circle</span>');
-
-            // 🌟 自動結案後阻擋非管理員展開卡片的動態保護鎖
-            let disableExpand = task.isCompleted && !hasAdminPrivilege;
-            let detailsTag = disableExpand 
-                ? `<div id="details_task_${key}" style="padding: 15px; outline: none;">`
-                : `<details id="details_task_${key}" style="padding: 15px; outline: none; cursor: default;">`;
-            let summaryTag = disableExpand
-                ? `<div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; list-style: none;">`
-                : `<summary style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; list-style: none;">`;
-            let endSummaryTag = disableExpand ? `</div>` : `</summary>`;
-            let endDetailsTag = disableExpand ? `</div>` : `</details>`;
-
-            let contentHtml = '';
-            if (disableExpand) {
-                contentHtml = `
-                <div style="margin-top: 15px; border-top: 1px dashed ${task.isCompleted ? '#7f8c8d' : 'var(--card-border)'}; padding-top: 15px; cursor: auto;">
-                    <div style="text-align:center; color:#e74c3c; font-weight: bold; padding: 12px; background: rgba(231,76,60,0.1); border-radius: 8px; display:flex; align-items:center; justify-content:center; gap:6px;">
-                        <span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">lock</span> 任務已結案，資料已鎖定隱藏
-                    </div>
-                </div>`;
-            } else {
-                contentHtml = `
-                <div style="margin-top: 15px; border-top: 1px dashed ${task.isCompleted ? '#7f8c8d' : 'var(--card-border)'}; padding-top: 15px; cursor: auto;">
-                    ${adminPanelHtml}
-                    <div style="background:var(--column-bg); border-radius:8px; border: 1px solid var(--input-border); max-height: 450px; overflow-y:auto;">
-                        ${enrolleeHtml || "<div style='padding:20px; text-align:center; color:var(--meta-text);'>目前尚未有人報名。</div>"}
-                    </div>
-                    ${inputHtml}
-                    ${dispatchBtn}
-                    ${shareLinksHtml} ${routeBtn}
-                    <div id="map_container_${key}" style="width: 100%; height: 350px; margin-top: 15px; border-radius: 8px; border: 2px solid var(--input-border); display: none; position: relative; z-index: 1;" onclick="event.stopPropagation();"></div>
-                </div>`;
-            }
-
-            card.innerHTML = `
-                ${detailsTag}
-                    ${summaryTag}
-                        <div style="flex: 1;">
-                            <h3 style="margin: 0 0 8px 0; color: ${task.isCompleted ? '#7f8c8d' : '#c0392b'}; font-size: 1.3em; line-height: 1.3; display:flex; align-items:center; gap:6px;">${titlePrefix} ${task.title}</h3>
-                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                ${targetHtml} ${timeHtml}
-                            </div>
-                        </div>
-                        ${!disableExpand ? `<span class="material-symbols-outlined card-chevron" style="font-size: 1.5em; margin-left: auto; color: var(--meta-text);">expand_more</span>` : ''}
-                    ${endSummaryTag}
-                    ${contentHtml}
-                ${endDetailsTag}
-            `;
             
-            if (task.isCompleted && completedContainer) {
-                completedContainer.appendChild(card);
-                hasCompletedTasks = true;
-            } else {
-                container.appendChild(card);
-                hasTasks = true;
-            }
-        });
-
-        if(!hasTasks) container.innerHTML = '<p style="color: var(--meta-text); text-align:center; padding: 20px;">目前無進行中的強開任務。</p>';
-        if(!hasCompletedTasks && completedContainer) completedContainer.innerHTML = '<p style="color: var(--meta-text); text-align:center; padding: 20px;">目前無已結案的任務。</p>';
-        
-        if(window.UIMemory) window.UIMemory.restore(); 
-    } catch (error) { console.error("渲染任務錯誤：", error); }
-};
-
-window.initForceBloomListeners = function() {
-    fbTasksRef.off(); fbPoolRef.off(); 
-    localFbTasks = {}; localFbPoolData = {};
-    
-    fbTasksRef.on('child_added', snap => { 
-        localFbTasks[snap.key] = snap.val(); 
-        renderForceBloomTasksDebounced(); 
-        processAutoDownloadUrl(snap.key, snap.val()); 
-    });
-    fbTasksRef.on('child_changed', snap => { localFbTasks[snap.key] = snap.val(); renderForceBloomTasksDebounced(); });
-    fbTasksRef.on('child_removed', snap => { delete localFbTasks[snap.key]; renderForceBloomTasksDebounced(); });
-
-    fbPoolRef.on('child_added', snap => { localFbPoolData[snap.key] = snap.val(); renderFbPoolStatusDebounced(); });
-    fbPoolRef.on('child_changed', snap => { localFbPoolData[snap.key] = snap.val(); renderFbPoolStatusDebounced(); });
-    fbPoolRef.on('child_removed', snap => { delete localFbPoolData[snap.key]; renderFbPoolStatusDebounced(); });
-};
-
-// ==========================================
-// 🌟 時間到了！前五分鐘自動派發器 ＆ 設定時間1小時後自動結案器
-// ==========================================
-setInterval(() => {
-    if (typeof localFbTasks === 'undefined' || !localFbTasks) return;
-    
-    let user = typeof firebase !== 'undefined' && firebase.auth ? firebase.auth().currentUser : null;
-    if (!user) return; 
-    
-    let now = new Date();
-    
-    Object.keys(localFbTasks).forEach(key => {
-        let task = localFbTasks[key];
-        if (!task || !task.isActive) return;
-        
-        // 只有該任務的發起人（或是最高管理員）的客戶端能觸發背景排程，避免多人重複執行
-        if (user.uid !== task.creatorUid && user.uid !== SUPER_ADMIN_UID) return;
-
-        let totalReq = 0;
-        if (task.enrollees) {
-            Object.values(task.enrollees).forEach(en => {
-                if (en.status === 0 && en.amount > 0) totalReq += parseInt(en.amount) || 0;
-            });
+            // --- 動作 3：將產出的四個下載網址整合到文字框內 ---
+            let finalOutputText = `【${baseName}】安全路線檔案已成功打包！\n點擊下方專屬網址即可直接下載對應格式：\n\n${fileLinksList}（提示：檔案已安全同步儲存於上傳者的 Gofile 個人雲端帳號中）`;
+            
+            urlInput.value = finalOutputText;
+            hintDiv.innerText = `🎉 成功！4個檔案已直接儲存在您個人的 Gofile 根目錄中。`;
+            
+        } catch (error) {
+            urlInput.value = `[錯誤]：${error.message}`;
+            hintDiv.innerText = "";
+        } finally {
+            shareBtn.disabled = false;
+            shareBtn.innerHTML = '<span class="material-symbols-rounded">share</span> 重新產生連結';
+            shareBtn.style.opacity = "1";
         }
-
-        if (task.exportTime) {
-            let tStr = task.exportTime.replace(/[^0-9]/g, '');
-            if (tStr.length >= 3) {
-                let h = parseInt(tStr.length === 4 ? tStr.substring(0,2) : tStr.substring(0,1));
-                let m = parseInt(tStr.length === 4 ? tStr.substring(2,4) : tStr.substring(1,3));
-
-                let targetDate = new Date();
-                targetDate.setHours(h, m, 0, 0);
-                
-                // 智慧防跨夜設計：如果設定的時間距離現在超過12小時，代表那是昨天的時間
-                if (targetDate.getTime() - now.getTime() > 12 * 60 * 60 * 1000) {
-                    targetDate.setDate(targetDate.getDate() - 1);
-                }
-
-                let diff = now.getTime() - targetDate.getTime();
-                
-                // 1. 自動結案鎖定：時間往後推移 1 小時 (1h ~ 3h 的保護區間，避免過舊重複觸發)
-                if (diff >= 60 * 60 * 1000 && diff <= 180 * 60 * 60 * 1000 && !task.isCompleted) {
-                    fbTasksRef.child(key).update({ isCompleted: true });
-                    console.log(`[自動結案鎖死] 任務名稱：${task.title}`);
-                }
-                // 2. 自動派發器：時間往前推 5 分鐘 (-5 mins ~ +10 mins)
-                else if (diff >= -5 * 60 * 1000 && diff <= 10 * 60 * 1000 && !task._isAutoDispatching && totalReq > 0) {
-                    task._isAutoDispatching = true; 
-                    if (typeof window.dispatchForceBloom === 'function') {
-                        console.log(`[自動派發觸發] 任務名稱：${task.title}`);
-                        window.dispatchForceBloom(key, totalReq, true);
-                    }
-                }
-            }
-        }
-    });
-}, 10000);
-
-// ==========================================
-// 🌟 異常換點功能 (背景瞬間運算 + 多基準點自動尋路)
-// ==========================================
-window.openReportSheet = async function(taskKey, eKey, idx, coordString) {
-    if (coordString === '處理中') return alert("座標正在處理中，請稍候！");
-
-    if (!confirm("確定要進行「異常換點」嗎？\n系統將自動尋找距離原點位、首點或末點最近的空閒點位進行替換。")) {
-        return;
     }
 
-    try {
-        let poolSnap = await fbPoolRef.once('value');
-        let pools = poolSnap.val();
-        if (!pools) return alert("水庫異常！找不到任何座標庫。");
-
-        let taskSnap = await fbTasksRef.child(taskKey).once('value');
-        let task = taskSnap.val();
-        let person = task.enrollees[eKey];
-        let myCoords = person.assignedCoords || [];
-        let now = getSyncedTime();
-
-        let referencePoints = [];
-        
-        let origParts = coordString.split(',');
-        referencePoints.push({ lat: parseFloat(origParts[0]), lng: parseFloat(origParts[1]) });
-        
-        if (myCoords.length > 0 && myCoords[0] !== '處理中') {
-            let p1 = myCoords[0].split(',');
-            referencePoints.push({ lat: parseFloat(p1[0]), lng: parseFloat(p1[1]) });
-        }
-        
-        if (myCoords.length > 0 && myCoords[myCoords.length - 1] !== '處理中') {
-            let pLast = myCoords[myCoords.length - 1].split(',');
-            referencePoints.push({ lat: parseFloat(pLast[0]), lng: parseFloat(pLast[1]) });
-        }
-
-        let oldZone = null, oldIndex = -1;
-        for (let z in pools) {
-            let coords = pools[z].coords || [];
-            for (let i = 0; i < coords.length; i++) {
-                if (coords[i] && coords[i].coordString === coordString) {
-                    oldZone = z; oldIndex = i;
-                }
-            }
-        }
-
-        let newCoordObj = null, newZone = null, newIndex = -1;
-        let globalMinDist = Infinity;
-
-        for (let z in pools) {
-            if (pools[z] && pools[z].isActive !== false && pools[z].coords) {
-                for (let i = 0; i < pools[z].coords.length; i++) {
-                    let c = pools[z].coords[i];
-                    let isActuallyExpired = (c.status === 2 && c.endTime && c.endTime < now);
-                    
-                    if (c && (c.status === 0 || isActuallyExpired) && c.coordString) {
-                        let parts = c.coordString.split(',');
-                        let cLat = parseFloat(parts[0]);
-                        let cLng = parseFloat(parts[1]);
-
-                        let localMinDist = Infinity;
-                        referencePoints.forEach(refP => {
-                            let d = getDistance(refP.lat, refP.lng, cLat, cLng);
-                            if (d < localMinDist) localMinDist = d;
-                        });
-
-                        if (localMinDist < globalMinDist) {
-                            globalMinDist = localMinDist;
-                            newCoordObj = c;
-                            newZone = z;
-                            newIndex = i;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!newCoordObj) {
-            return alert("⚠️ 換點失敗：目前沒有任何可用的空閒座標了！");
-        }
-
-        let updates = {};
-
-        if (oldZone !== null && oldIndex !== -1) {
-            updates[`/ForceBloom_Pool/${oldZone}/coords/${oldIndex}/status`] = 0;
-            updates[`/ForceBloom_Pool/${oldZone}/coords/${oldIndex}/endTime`] = null;
-            updates[`/ForceBloom_Pool/${oldZone}/coords/${oldIndex}/assignedTo`] = null;
-        }
-
-        myCoords[idx] = newCoordObj.coordString;
-        updates[`/ForceBloom_Tasks/${taskKey}/enrollees/${eKey}/assignedCoords`] = myCoords;
-        updates[`/ForceBloom_Pool/${newZone}/coords/${newIndex}/status`] = 1;
-        updates[`/ForceBloom_Pool/${newZone}/coords/${newIndex}/assignedTo`] = person.nickname;
-
-        let newFullRoute = [], allAssignedNodes = [];
-        task.enrollees[eKey].assignedCoords = myCoords; 
-
-        Object.values(task.enrollees).forEach(en => {
-            if (en.status >= 1 && en.assignedCoords) {
-                en.assignedCoords.forEach(cStr => {
-                    let parts = cStr.split(',');
-                    allAssignedNodes.push({ coordString: cStr, lat: parseFloat(parts[0]), lng: parseFloat(parts[1]) });
-                });
-            }
-        });
-
-        if (allAssignedNodes.length > 0) {
-            let unvisited = [...allAssignedNodes];
-            let currentNode = unvisited.shift();
-            newFullRoute.push(currentNode.coordString);
-            
-            while (unvisited.length > 0) {
-                let bestIdx = 0, minDist = Infinity;
-                for (let i = 0; i < unvisited.length; i++) {
-                    let d = getDistance(currentNode.lat, currentNode.lng, unvisited[i].lat, unvisited[i].lng);
-                    if (d < minDist) { minDist = d; bestIdx = i; }
-                }
-                let targetNode = unvisited.splice(bestIdx, 1)[0];
-                let cStr = targetNode.coordString;
-                if (newFullRoute.length === 0 || newFullRoute[newFullRoute.length - 1] !== cStr) {
-                    newFullRoute.push(cStr);
-                }
-                currentNode = targetNode;
-            }
-        }
-        
-        updates[`/ForceBloom_Tasks/${taskKey}/fullRoute`] = newFullRoute;
-
-        await database.ref().update(updates);
-        alert(`✅ 換點成功！\n原座標已退回水庫。\n新座標為：📍[${newCoordObj.coordString}]`);
-
-    } catch (err) {
-        console.error(err);
-        alert("換點發生錯誤：" + err.message);
+    function copyShareLink() {
+        const input = document.getElementById("shareUrlInput");
+        input.select();
+        document.execCommand("copy");
+        alert("通知文字與下載連結已複製！");
     }
-};
-
-window.dispatchForceBloom = async function(taskKey, totalReq, isAuto = false) {
-    if(!window.requireNetwork()) return; 
-    try {
-        if (!isAuto) {
-            if(totalReq <= 0) return alert("目前沒有任何人報名喔！");
-            if(!confirm(`確定要為這 ${totalReq} 朵需求派發座標嗎？`)) return;
-        } else {
-            if(totalReq <= 0) return;
-        }
-
-        let poolSnap = await fbPoolRef.once('value');
-        let pools = poolSnap.val();
-        if(!pools) {
-            if(!isAuto) alert("座標庫是空的！請先匯入點位。");
-            return;
-        }
-
-        let task = localFbTasks[taskKey];
-        if(!task || !task.enrollees) {
-            if(!isAuto) alert("任務資料異常！");
-            return;
-        }
-
-        let enrolleeKeys = Object.keys(task.enrollees);
-        let validEnrollees = [];
-        let currentTotalReq = 0;
-
-        enrolleeKeys.forEach(eKey => {
-            let person = task.enrollees[eKey];
-            if (person && person.status === 0) {
-                let amt = parseInt(person.amount, 10) || 0;
-                if (amt > 0) {
-                    validEnrollees.push({ key: eKey, person: person, amount: amt });
-                }
-            }
-        });
-
-        if (validEnrollees.length > 0) {
-            let reducedAny = false;
-
-            // 🌟 完全依照指示：動態演算防虧本死亡螺旋 (不斷往回判定直到沒人超標)
-            while (true) {
-                // 1. 重算目前的總需求數量
-                let currentCalcTotal = validEnrollees.reduce((sum, e) => sum + e.amount, 0);
-                if (currentCalcTotal <= 0) break;
-
-                // 2. 算出現階段的安全上限 a (無條件捨去)
-                let a = Math.floor(currentCalcTotal * 35 / 150);
-                if (a < 1) a = 1; // 保底機制，避免歸零
-
-                // 3. 找出目前報名最多的朵數 b
-                let b = 0;
-                validEnrollees.forEach(e => { if (e.amount > b) b = e.amount; });
-
-                // 如果最多的人已經低於或等於安全上限 a，代表全部合乎比例，立刻結束計算！
-                if (b <= a) break;
-
-                // 4. 找出報名數量等於 b (最多朵) 的人
-                let maxEnrollees = validEnrollees.filter(e => e.amount === b);
-                
-                // 依照報名順序(key越大的代表越晚報名)進行排序
-                maxEnrollees.sort((e1, e2) => {
-                    return e1.key > e2.key ? -1 : 1; 
-                });
-
-                // 5. 將最晚報名且數量最多的人朵數 -1，然後馬上回到上方第 1 步繼續判定
-                let targetKey = maxEnrollees[0].key;
-                let targetIdx = validEnrollees.findIndex(e => e.key === targetKey);
-                validEnrollees[targetIdx].amount--;
-                reducedAny = true;
-            }
-
-            // 更新至最新計算結果
-            if (reducedAny) {
-                let up = {};
-                currentTotalReq = 0; 
-                validEnrollees.forEach(e => {
-                    currentTotalReq += e.amount;
-                    if (task.enrollees[e.key].amount !== e.amount) {
-                        up[`ForceBloom_Tasks/${taskKey}/enrollees/${e.key}/amount`] = e.amount;
-                        task.enrollees[e.key].amount = e.amount;
-                    }
-                });
-                await database.ref().update(up);
-                if (!isAuto) alert(`系統警告：為避免強開虧本，已自動過濾並依序刪減過高的報名數量！\n最終發放數量已調整為安全值。`);
-                else console.log(`防虧本機制觸發，已動態調降朵數`);
-            } else {
-                currentTotalReq = validEnrollees.reduce((sum, e) => sum + e.amount, 0);
-            }
-        }
-
-        validEnrollees = validEnrollees.filter(e => e.amount > 0);
-        if (validEnrollees.length === 0) {
-            if(!isAuto) alert("防虧本調節後無人需要派發！");
-            return;
-        }
-
-        let availableNodes = [];
-        let uniqueAvailable = new Set();
-        let now = getSyncedTime(); 
-        
-        for (const zoneName of Object.keys(pools)) {
-            let isActiveZone = pools[zoneName].isActive !== false;
-            let coords = pools[zoneName].coords || [];
-            
-            for (let i = 0; i < coords.length; i++) {
-                let c = coords[i];
-                if (c && c.coordString) {
-                    let parts = c.coordString.split(',');
-                    let nodeObj = { 
-                        zone: zoneName, origIndex: i, coordString: c.coordString, 
-                        lat: parseFloat(parts[0]), lng: parseFloat(parts[1]), status: c.status
-                    };
-                    
-                    let isActuallyExpired = (c.status === 2 && c.endTime && c.endTime < now);
-                    let isAvailable = (c.status === 0) || isActuallyExpired;
-
-                    if (isAvailable && isActiveZone && !uniqueAvailable.has(c.coordString)) {
-                        uniqueAvailable.add(c.coordString);
-                        availableNodes.push(nodeObj);
-                    }
-                }
-            }
-        }
-
-        if (availableNodes.length === 0) return alert("沒有任何「已啟用」的空閒座標！");
-
-        if (availableNodes.length < currentTotalReq) {
-            alert(`系統警告：所有已啟用的水庫，空閒座標僅剩 ${availableNodes.length} 個。\n將自動調節群友報名數量！`);
-            validEnrollees.sort((a, b) => b.amount - a.amount);
-            while (currentTotalReq > availableNodes.length) {
-                if (validEnrollees[0].amount > 0) {
-                    validEnrollees[0].amount--; currentTotalReq--;
-                    validEnrollees.sort((a, b) => b.amount - a.amount); 
-                } else break;
-            }
-            let up = {};
-            validEnrollees.forEach(e => {
-                up[`ForceBloom_Tasks/${taskKey}/enrollees/${e.key}/amount`] = e.amount;
-                task.enrollees[e.key].amount = e.amount;
-            });
-            await database.ref().update(up);
-        }
-
-        validEnrollees = validEnrollees.filter(e => e.amount > 0);
-        if (validEnrollees.length === 0) return alert("調節後無人需要派發！");
-
-        let fullRoute = [], realAssignedNodes = [];
-        
-        if (availableNodes.length > 0) {
-            const centerLat = availableNodes.reduce((s, n) => s + n.lat, 0) / availableNodes.length;
-            const centerLng = availableNodes.reduce((s, n) => s + n.lng, 0) / availableNodes.length;
-            availableNodes.sort((a, b) => {
-                const angleA = Math.atan2(a.lat - centerLat, (a.lng - centerLng) * Math.cos(centerLat * Math.PI / 180));
-                const angleB = Math.atan2(b.lat - centerLat, (b.lng - centerLng) * Math.cos(centerLat * Math.PI / 180));
-                return angleA - angleB;
-            });
-        }
-
-        let currentNode = availableNodes.shift(); 
-        fullRoute.push(currentNode.coordString); 
-        realAssignedNodes.push(currentNode);
-        
-        let needed = currentTotalReq - 1;
-        while (needed > 0 && availableNodes.length > 0) {
-            let bestIdx = 0, minDist = Infinity;
-            for (let i = 0; i < availableNodes.length; i++) {
-                let d = getDistance(currentNode.lat, currentNode.lng, availableNodes[i].lat, availableNodes[i].lng);
-                if (d < minDist) { minDist = d; bestIdx = i; }
-            }
-            let candidate = availableNodes.splice(bestIdx, 1)[0];
-            let cStr = candidate.coordString;
-            if (fullRoute.length === 0 || fullRoute[fullRoute.length - 1] !== cStr) fullRoute.push(cStr); 
-            currentNode = candidate;
-            realAssignedNodes.push(candidate); 
-            needed--;
-        }
-
-        let routeCursor = 0, updates = {}; 
-        for (let i = 0; i < validEnrollees.length; i++) {
-            let eKey = validEnrollees[i].key;
-            let person = validEnrollees[i].person;
-            let amt = validEnrollees[i].amount; 
-            let myCoords = [];
-            
-            for (let j = 0; j < amt; j++) {
-                let node = realAssignedNodes[routeCursor];
-                if (!node) continue; 
-                myCoords.push(node.coordString);
-                updates[`/ForceBloom_Pool/${node.zone}/coords/${node.origIndex}/status`] = 1; 
-                updates[`/ForceBloom_Pool/${node.zone}/coords/${node.origIndex}/assignedTo`] = person.nickname; 
-                routeCursor++;
-            }
-            
-            updates[`/ForceBloom_Tasks/${taskKey}/enrollees/${eKey}/status`] = 1; 
-            updates[`/ForceBloom_Tasks/${taskKey}/enrollees/${eKey}/assignedCoords`] = myCoords;
-        }
-        
-        updates[`/ForceBloom_Tasks/${taskKey}/fullRoute`] = fullRoute;
-        
-        await database.ref().update(updates);
-        if (!isAuto) alert(`派發成功！\n系統已採自動循序分配，共發配了 ${currentTotalReq} 個點位。`);
-        else console.log(`自動派發成功！發配了 ${currentTotalReq} 朵。`);
-        
-    } catch(err) {
-        console.error("派發錯誤：", err);
-        alert(`派發失敗！發生系統錯誤：\n${err.message}`);
-    }
-};
+</script>
+</body>
+</html>
