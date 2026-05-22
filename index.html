@@ -1,1140 +1,975 @@
-// ==========================================
-// 變數與防抖動設定
-// ==========================================
-let localPointsData = [];
-let localWishData = {};
-let localCheckedDate = null; 
-
-const renderTimerDebounced = debounce(renderTimer, 100);
-const renderWishlistDebounced = debounce(renderWishlist, 100);
-
-// UI 智慧記憶引擎：防止刷新失焦、記住捲軸高度，並加入「卡片自動追蹤」功能
-window.UIMemory = {
-    state: { openDetails: [], focusedId: null, scrollY: 0 },
-    
-    init: function() {
-        if ('scrollRestoration' in history) {
-            history.scrollRestoration = 'manual';
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>GPX 智慧島嶼防小人路線產生器</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,1,0" rel="stylesheet" />
+    <style>
+        :root {
+            --primary: #4A90E2;
+            --success: #2ECC71;
+            --danger: #E74C3C;
+            --warning: #F39C12;
+            --purple: #9B59B6;
+            --dark: #2C3E50;
+            --gray: #5D6D7E;
         }
-        let saved = sessionStorage.getItem('UIMemoryState');
-        if (saved) {
-            try { this.state = JSON.parse(saved); } catch(e){}
-        }
-        window.addEventListener('beforeunload', () => {
-            this.capture(true);
-        });
-    },
-
-    capture: function(force = false) {
-        let container = document.getElementById('pending-list');
-        if (!force && (!container || container.innerHTML.trim() === '')) return;
-
-        this.state.openDetails = [];
-        document.querySelectorAll('details').forEach(el => {
-            if (el.open && el.id) this.state.openDetails.push(el.id);
-        });
-
-        this.state.focusedId = document.activeElement ? document.activeElement.id : null;
-        this.state.selectionStart = null;
-        this.state.selectionEnd = null;
-        this.state.focusedValue = null;
         
-        if (this.state.focusedId && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
-            try {
-                this.state.selectionStart = document.activeElement.selectionStart;
-                this.state.selectionEnd = document.activeElement.selectionEnd;
-                this.state.focusedValue = document.activeElement.value;
-            } catch(e) {}
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Microsoft JhengHei", "PingFang TC", sans-serif;
+            margin: 0;
+            padding: 20px 15px;
+            background: linear-gradient(135deg, #e0c3fc 0%, #8ec5fc 100%);
+            background-attachment: fixed;
+            color: var(--dark);
+            min-height: 100vh;
         }
-
-        this.state.scrollY = window.scrollY || document.documentElement.scrollTop;
-        sessionStorage.setItem('UIMemoryState', JSON.stringify(this.state));
-    },
-
-    restore: function() {
-        // 1. 恢復所有之前打開的抽屜
-        this.state.openDetails.forEach(id => {
-            let el = document.getElementById(id);
-            if (el) el.open = true;
-        });
-
-        // 2. 恢復正在打字的輸入框與游標
-        if (this.state.focusedId) {
-            let el = document.getElementById(this.state.focusedId);
-            if (el) {
-                if (this.state.focusedValue !== null) el.value = this.state.focusedValue;
-                el.focus();
-                try {
-                    if (this.state.selectionStart !== null) {
-                        el.setSelectionRange(this.state.selectionStart, this.state.selectionEnd);
-                    }
-                } catch(e) {}
-            }
-        }
-
-        // 🌟 3. 動態畫面追蹤與高度還原
-        setTimeout(() => {
-            // A. 如果使用者剛剛有操作卡片，系統直接「追蹤」並將該卡片強制置中！
-            if (window.targetScrollCardIndex !== undefined && window.targetScrollCardIndex !== null) {
-                let targetCard = document.getElementById(`card-${window.targetScrollCardIndex}`);
-                if (targetCard) {
-                    targetCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    
-                    // 加點小特效，讓卡片發光一下，提示使用者「它跑到這裡來了」
-                    targetCard.style.transition = 'box-shadow 0.4s ease';
-                    targetCard.style.boxShadow = '0 0 15px rgba(142,68,173,0.7)';
-                    setTimeout(() => { targetCard.style.boxShadow = ''; }, 1500);
-                }
-                // 追蹤完畢後清空標籤，避免下次單純按 F5 時又跳回來
-                window.targetScrollCardIndex = null; 
-            } 
-            // B. 如果沒有特定操作 (例如單純按 F5 刷新網頁)，才乖乖還原原本的捲軸高度
-            else if (this.state.scrollY > 0) {
-                window.scrollTo({ top: this.state.scrollY, behavior: 'instant' });
-            }
-        }, 60); // 延遲 60 毫秒，確保 HTML 卡片結構已經完全產生
-    }
-};
-
-// 啟動記憶引擎
-window.UIMemory.init();
-
-// ==========================================
-// 許願池邏輯
-// ==========================================
-function initFlowerSelect() {
-    const select = document.getElementById('flowerSelect');
-    select.innerHTML = '';
-    flowerData.forEach(f => {
-        select.innerHTML += `<option value="${f.name}">${f.name}</option>`;
-    });
-    updateColors();
-}
-
-function filterFlowers() {
-    const searchRaw = document.getElementById('flowerSearch').value.trim();
-    const select = document.getElementById('flowerSelect');
-    select.innerHTML = '';
-    
-    let filtered = flowerData.filter(f => f.name.includes(searchRaw));
-    
-    if (filtered.length === 0 && searchRaw !== "") {
-        select.innerHTML = `<option value="${searchRaw}">${searchRaw} (自訂)</option>`;
-        updateColors(["白", "黃", "紅", "藍"]);
-    } else {
-        if (filtered.length === 0) filtered = flowerData;
-        filtered.forEach(f => {
-            select.innerHTML += `<option value="${f.name}">${f.name}</option>`;
-        });
-        updateColors(filtered[0].colors);
-    }
-}
-
-function updateColors(forceColors = null) {
-    const selectedFlower = document.getElementById('flowerSelect').value;
-    const colorSelect = document.getElementById('colorSelect');
-    colorSelect.innerHTML = '';
-    
-    let colors = forceColors;
-    if (!colors) {
-        const flower = flowerData.find(f => f.name === selectedFlower);
-        colors = flower ? flower.colors : ["白", "黃", "紅", "藍"]; 
-    }
-    colors.forEach(c => {
-        colorSelect.innerHTML += `<option value="${c}">${c}</option>`;
-    });
-}
-
-function handleWishEnter(event) {
-    if (event.key === 'Enter') submitWish();
-}
-
-function submitWish() {
-    const nickname = document.getElementById('wishNickname').value.trim();
-    const fName = document.getElementById('flowerSelect').value;
-    const fColor = document.getElementById('colorSelect').value;
-    const remark = document.getElementById('wishRemark').value.trim();
-
-    if (!nickname) {
-        alert("請務必填寫「你的暱稱」，管理員才找得到許願人喔！");
-        return;
-    }
-    if (!fName) return;
-
-    wishRef.push({
-        nickname: nickname, name: fName, color: fColor, remark: remark,
-        completer: '', amount: '', matchedPoint: '', isCompleted: false,
-        completedAt: 0, createdAt: firebase.database.ServerValue.TIMESTAMP
-    }).catch((error) => {
-        alert('寫入資料庫失敗：' + error.message);
-    });
-
-    document.getElementById('flowerSearch').value = '';
-    document.getElementById('wishRemark').value = '';
-    initFlowerSelect();
-}
-
-function toggleWishStatus(key, currentStatus) {
-    if (!currentStatus) {
-        if (!confirm("確定是否要完成這個願望？")) {
-            renderWishlist(); 
-            return;
-        }
-    }
-    wishRef.child(key).update({ 
-        isCompleted: !currentStatus, 
-        completedAt: !currentStatus ? getSyncedTime() : 0 
-    });
-}
-
-function deleteWish(key) {
-    if(confirm("確定要永久刪除這個許願嗎？")) wishRef.child(key).remove();
-}
-
-function updateWishField(key, field, value) {
-    wishRef.child(key).update({ [field]: value });
-}
-
-function getColorClass(colorName) {
-    if(colorName.includes("白")) return "color-white";
-    if(colorName.includes("黃")) return "color-yellow";
-    if(colorName.includes("紅")) return "color-red";
-    if(colorName.includes("藍")) return "color-blue";
-    return "";
-}
-
-function isTodayInTaiwan(timestamp) {
-    if (!timestamp || timestamp === 0) return false;
-    const formatter = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'Asia/Taipei', year: 'numeric', month: 'numeric', day: 'numeric'
-    });
-    return formatter.format(new Date()) === formatter.format(new Date(timestamp));
-}
-
-function renderWishlist() {
-    const pendingList = document.getElementById('pendingWishList');
-    const completedList = document.getElementById('completedWishList');
-    pendingList.innerHTML = ''; completedList.innerHTML = '';
-
-    Object.keys(localWishData).forEach(key => {
-        const wish = localWishData[key];
-        if (!wish) return;
-
-        const li = document.createElement('li');
-        li.className = 'wish-item';
         
-        const colorClass = getColorClass(wish.color);
-        const textClass = wish.isCompleted ? 'wish-completed' : '';
-        const checkedAttr = wish.isCompleted ? 'checked' : '';
-        const disabledAttr = wish.isCompleted ? 'disabled' : '';
-        
-        const deleteBtnHtml = isEditMode ? `<button class="btn-delete-wish" onclick="deleteWish('${key}')" style="display:flex; align-items:center; gap:4px;"><span class="material-symbols-outlined" style="font-size: 1.1em;">delete</span> 刪除</button>` : '';
-        const remarkHtml = wish.remark ? ` <span style="font-size:0.85em; color:var(--meta-text);">(${wish.remark})</span>` : '';
-        const nicknameDisplay = `<span style="color: #8e44ad; font-weight: bold; margin-right: 5px;">[${wish.nickname}]</span>`;
-
-        let matchOptions = `<option value="">-- 尋找空閒花田 --</option>`;
-        if (wish.amount) {
-            let targetAmount = parseInt(wish.amount);
-            let idlePoints = [];
-            let now = getSyncedTime(); 
-            Object.keys(localPointsData).forEach(pKey => {
-                let p = localPointsData[pKey];
-                let isExpired = p && p.isCounting && (p.endTime - now < 0);
-                if (p && (!p.isCounting || isExpired)) idlePoints.push({...p, originalIndex: pKey});
-            });
-            
-            if (idlePoints.length > 0) {
-                let exactMatches = idlePoints.filter(p => parseInt(p.seedlings || 0) === targetAmount);
-                if (exactMatches.length > 0) {
-                    exactMatches.forEach(p => {
-                        let selected = (wish.matchedPoint == p.originalIndex) ? 'selected' : '';
-                        matchOptions += `<option value="${p.originalIndex}" ${selected}>剛好符合: ${p.name} (缺 ${p.seedlings} 苗)</option>`;
-                    });
-                } else {
-                    let minDiff = Math.min(...idlePoints.map(p => Math.abs(parseInt(p.seedlings || 0) - targetAmount)));
-                    let closestMatches = idlePoints.filter(p => Math.abs(parseInt(p.seedlings || 0) - targetAmount) === minDiff);
-                    closestMatches.forEach(p => {
-                        let selected = (wish.matchedPoint == p.originalIndex) ? 'selected' : '';
-                        matchOptions += `<option value="${p.originalIndex}" ${selected}>最接近 (${p.seedlings}苗): ${p.name}</option>`;
-                    });
-                }
-            } else {
-                matchOptions = `<option value="">目前無空閒花田</option>`;
-            }
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
         }
 
-        li.innerHTML = `
-            <div class="wish-header">
-                <label class="wish-label">
-                    <input type="checkbox" ${checkedAttr} onchange="toggleWishStatus('${key}', ${wish.isCompleted})">
-                    <span class="${textClass}">${nicknameDisplay}${wish.name} <span class="wish-color-badge ${colorClass}">${wish.color}</span>${remarkHtml}</span>
-                </label>
-                ${deleteBtnHtml}
-            </div>
-            <div class="wish-sub-row">
-                <input type="text" class="edit-input" placeholder="完成人暱稱" value="${wish.completer || ''}" onchange="updateWishField('${key}', 'completer', this.value)" ${disabledAttr}>
-                <input type="number" class="edit-input edit-input-small" placeholder="預計顆數" value="${wish.amount || ''}" onchange="updateWishField('${key}', 'amount', this.value)" ${disabledAttr}>
-                <select class="edit-input" style="flex: 2; min-width: 150px; cursor: pointer;" onchange="updateWishField('${key}', 'matchedPoint', this.value)" ${disabledAttr}>
-                    ${matchOptions}
+        .material-symbols-rounded {
+            vertical-align: middle;
+            font-size: 1.25rem;
+            margin-right: 6px;
+        }
+
+        .app-header {
+            text-align: center;
+            margin-bottom: 25px;
+        }
+        .app-header h1 {
+            margin: 0;
+            font-size: 1.6rem;
+            color: #1A252F;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-shadow: 0 2px 10px rgba(255,255,255,0.5);
+        }
+        .app-header p {
+            margin: 5px 0 0 0;
+            font-size: 0.9rem;
+            color: #34495E;
+            font-weight: 500;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.45);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.6);
+            border-radius: 20px;
+            padding: 22px;
+            margin-bottom: 18px;
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.1);
+        }
+
+        .card-title {
+            font-size: 1.15rem;
+            font-weight: bold;
+            color: var(--dark);
+            margin-top: 0;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.5);
+            padding-bottom: 10px;
+        }
+
+        .file-upload-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .file-upload-btn {
+            background: rgba(255, 255, 255, 0.6);
+            color: var(--primary);
+            border: 1px dashed var(--primary);
+            padding: 14px;
+            border-radius: 12px;
+            text-align: center;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(5px);
+        }
+        .file-upload-btn:active { background: rgba(255, 255, 255, 0.8); }
+        .file-name-display { font-size: 0.85rem; color: var(--success); font-weight: bold; text-align: center; }
+        input[type="file"] { display: none; }
+
+        .divider {
+            text-align: center;
+            font-size: 0.85rem;
+            color: var(--gray);
+            position: relative;
+            margin: 18px 0;
+        }
+        .divider::before, .divider::after {
+            content: ""; position: absolute; top: 50%; width: 35%; height: 1px; background: rgba(0,0,0,0.1);
+        }
+        .divider::before { left: 0; }
+        .divider::after { right: 0; }
+
+        .input-box {
+            width: 100%; padding: 12px; 
+            border: 1px solid rgba(255, 255, 255, 0.8);
+            border-radius: 12px; box-sizing: border-box; font-size: 0.95rem;
+            background: rgba(255, 255, 255, 0.5); 
+            transition: all 0.3s;
+            color: var(--dark);
+            backdrop-filter: blur(5px);
+        }
+        .input-box:focus { 
+            border-color: var(--primary); 
+            outline: none; 
+            background: rgba(255, 255, 255, 0.8); 
+            box-shadow: 0 0 10px rgba(74,144,226,0.2);
+        }
+        textarea.input-box { height: 90px; resize: vertical; }
+        select.input-box { -webkit-appearance: none; appearance: none; cursor: pointer; }
+
+        .toggle-row {
+            display: flex; justify-content: space-between; align-items: center;
+            background: rgba(255, 255, 255, 0.5); padding: 14px 15px; border-radius: 12px; margin-bottom: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.6);
+        }
+        .toggle-label { font-weight: bold; font-size: 0.95rem; color: var(--dark); display:flex; align-items:center; }
+        .switch { position: relative; display: inline-block; width: 46px; height: 26px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+            background-color: rgba(0,0,0,0.15); transition: .4s; border-radius: 26px;
+        }
+        .slider:before {
+            position: absolute; content: ""; height: 20px; width: 20px; left: 3px; bottom: 3px;
+            background-color: white; transition: .4s; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        input:checked + .slider { background-color: var(--success); }
+        input:checked + .slider:before { transform: translateX(20px); }
+
+        .step-settings {
+            display: flex; align-items: center; gap: 8px; margin-top: 10px;
+            background: rgba(255, 255, 255, 0.4); padding: 12px; border-radius: 12px; 
+            border: 1px solid rgba(255, 255, 255, 0.6);
+        }
+        .step-input { 
+            width: 60px; padding: 8px; text-align: center; 
+            border: 1px solid rgba(255, 255, 255, 0.8); border-radius: 8px; 
+            background: rgba(255, 255, 255, 0.6);
+        }
+
+        .btn {
+            width: 100%; padding: 16px; border: 1px solid rgba(255,255,255,0.4); border-radius: 14px;
+            font-size: 1.05rem; font-weight: bold; color: white; cursor: pointer;
+            transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 6px;
+            margin-bottom: 12px; box-sizing: border-box; backdrop-filter: blur(4px);
+        }
+        .btn:active:not(:disabled) { transform: scale(0.98); }
+        .btn:disabled { opacity: 0.7; cursor: not-allowed; }
+        
+        .btn-primary { background: rgba(74, 144, 226, 0.85); box-shadow: 0 4px 15px rgba(74, 144, 226, 0.3); }
+        .btn-success { background: rgba(46, 204, 113, 0.85); box-shadow: 0 4px 15px rgba(46, 204, 113, 0.3); }
+        .btn-purple { background: rgba(155, 89, 182, 0.85); box-shadow: 0 4px 15px rgba(155, 89, 182, 0.3); }
+        .btn-warning { background: rgba(243, 156, 18, 0.85); box-shadow: 0 4px 15px rgba(243, 156, 18, 0.3); }
+        .btn-ghost { background: transparent; color: var(--danger); font-size: 0.9rem; padding: 8px; border: none; margin-bottom: 0; box-shadow: none; font-weight: 500; display:inline-flex;}
+        
+        .action-row { display: flex; gap: 12px; margin-bottom: 12px;}
+        .action-row .btn { margin-bottom: 0; flex: 1; font-size: 0.95rem; padding: 14px 10px;}
+
+        .map-modal {
+            display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background-color: rgba(0, 0, 0, 0.75); z-index: 9999; flex-direction: column;
+            align-items: center; justify-content: center; backdrop-filter: blur(8px);
+            opacity: 0; transition: opacity 0.3s ease;
+        }
+        .map-content { width: 92%; height: 85%; background: white; border-radius: 20px; position: relative; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.4); }
+        #map { width: 100%; height: 100%; }
+        .close-map-btn { position: absolute; top: 15px; right: 15px; z-index: 10000; background: rgba(231,76,60,0.95); color: white; border: none; padding: 10px 20px; border-radius: 20px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+
+        .hint-text { font-size: 0.8rem; color: var(--gray); margin-top: 6px; line-height: 1.4; font-weight: normal;}
+        
+        .tutorial-list { margin: 5px 0 12px 0; padding-left: 20px; font-size: 0.85rem; color: #34495e; line-height: 1.5; }
+        .tutorial-list a { color: var(--primary); font-weight: bold; text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="app-header">
+        <h1><span class="material-symbols-rounded">location_on</span>極速智慧繞道產生器</h1>
+        <p>安全平滑繞行邊緣弧度，高效閃避 50m 危險禁區</p>
+    </div>
+
+    <div class="card">
+        <h3 class="card-title"><span class="material-symbols-rounded">download</span> 1. 提供路線來源</h3>
+        
+        <div class="file-upload-wrapper">
+            <label for="fileInput" class="file-upload-btn">
+                <span class="material-symbols-rounded">folder_open</span> 點此選擇 GPX 檔案
+            </label>
+            <input type="file" id="fileInput" accept=".gpx" onchange="updateFileName()">
+            <div id="fileNameDisplay" class="file-name-display" style="display: none;">已選擇: </div>
+        </div>
+
+        <div class="divider">或直接貼上座標</div>
+
+        <textarea id="coordInput" class="input-box" placeholder="在此貼上經緯度 (緯度,經度)&#10;22.639, 120.302&#10;22.640, 120.305"></textarea>
+        
+        <div style="text-align: right; margin-top: 8px;">
+            <button class="btn-ghost" onclick="clearInput()"><span class="material-symbols-rounded">delete</span> 清除重填</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3 class="card-title"><span class="material-symbols-rounded">settings</span> 2. 轉換設定</h3>
+
+        <div style="margin-bottom: 18px;">
+            <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center;">
+                <span class="material-symbols-rounded">speed</span> 預測完成時間 (設定速度)
+            </label>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <input type="number" id="speedInput" class="input-box" value="15" min="0.1" step="0.1" style="flex:1;">
+                <select id="speedUnit" class="input-box" style="flex:1; cursor: pointer;">
+                    <option value="kmh">公里/小時 (km/h)</option>
+                    <option value="ms">公尺/秒 (m/s)</option>
+                    <option value="mmin">公尺/分鐘 (m/min)</option>
                 </select>
             </div>
-        `;
+        </div>
 
-        if (wish.isCompleted) {
-            if (isTodayInTaiwan(wish.completedAt)) completedList.appendChild(li);
-        } else {
-            pendingList.appendChild(li);
+        <div class="toggle-row">
+            <div>
+                <div class="toggle-label"><span class="material-symbols-rounded">directions_walk</span> 啟用模擬步行插點</div>
+                <div class="hint-text">在長直線中加入隨機碎步。</div>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="densifyCheck" checked onchange="toggleDensifySettings()">
+                <span class="slider"></span>
+            </label>
+        </div>
+
+        <div id="stepSettings" class="step-settings">
+            <span style="font-size:0.9rem; font-weight:bold; color:var(--dark);">隨機步伐：</span>
+            <input type="number" id="minStep" class="step-input" value="5" min="1">
+            <span style="color:var(--gray);">~</span>
+            <input type="number" id="maxStep" class="step-input" value="10" min="1">
+            <span style="color:var(--gray); font-size:0.9rem;">公尺</span>
+        </div>
+
+        <div style="margin-top: 18px;">
+            <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center;">
+                <span class="material-symbols-rounded">label</span> 路線自訂名稱
+            </label>
+            <input type="text" id="customFileName" class="input-box" placeholder="例如：防小人作戰路線">
+        </div>
+    </div>
+
+    <div class="card" style="border: 1px solid rgba(155, 89, 182, 0.4);">
+        <h3 class="card-title" style="color: var(--purple); border-bottom-color: rgba(155, 89, 182, 0.3);">
+            <span class="material-symbols-rounded">cloud_queue</span> 3. Gofile 個人雲端設定
+        </h3>
+        <p class="hint-text" style="color: var(--dark); font-weight: 500; font-size: 0.9rem; margin-bottom: 5px;">
+            分享功能需要使用您個人的 Gofile 空間，請依照以下步驟操作：
+        </p>
+        <ol class="tutorial-list">
+            <li>前往 <a href="https://gofile.io/" target="_blank">Gofile 官網</a> 免費註冊並登入。</li>
+            <li>點擊左上角的 <b>「Add Acount」</b> 進行註冊。</li>
+            <li>選擇 <b>「My Profile」</b> 。</li>
+            <li>複製畫面中的 <b>「API token」</b> 貼到下方欄位。</li>
+        </ol>
+
+        <div>
+            <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center;">
+                <span class="material-symbols-rounded">vpn_key</span> 您的 Gofile API Token
+            </label>
+            <input type="password" id="userGofileToken" class="input-box" placeholder="請在此貼上您的 API Token (例如：oS4e5...)">
+        </div>
+    </div>
+
+    <button class="btn btn-primary" onclick="processData()" id="generateMainBtn" style="padding: 18px; font-size: 1.15rem;">
+        <span class="material-symbols-rounded">rocket_launch</span> 立即生成極速安全路線
+    </button>
+
+    <div class="card" id="resultCard" style="display: none; border: 2px solid rgba(46, 204, 113, 0.6);">
+        <h3 class="card-title" style="color: #27ae60;"><span class="material-symbols-rounded">check_circle</span> 4. 生成成功！</h3>
+        
+        <div id="routeStats" style="background: rgba(255, 255, 255, 0.6); padding: 15px; border-radius: 12px; margin-bottom: 15px; border: 1px solid rgba(255, 255, 255, 0.8); display: flex; flex-direction: column; gap: 10px;">
+            <div style="display: flex; align-items: center; font-size: 0.95rem; color: var(--dark);">
+                <span class="material-symbols-rounded" style="color: var(--primary);">straighten</span>
+                <span style="font-weight: bold; width: 80px;">總距離：</span>
+                <span id="displayDistance" style="font-weight: bold; color: var(--primary);">0 公尺</span>
+            </div>
+            <div style="display: flex; align-items: center; font-size: 0.95rem; color: var(--dark);">
+                <span class="material-symbols-rounded" style="color: var(--warning);">timer</span>
+                <span style="font-weight: bold; width: 80px;">預估時間：</span>
+                <span id="displayTime" style="font-weight: bold; color: var(--warning);">0 分 0 秒</span>
+            </div>
+        </div>
+
+        <button class="btn btn-warning" onclick="openMap()" style="margin-bottom: 15px;"><span class="material-symbols-rounded">map</span> 預覽繞路地圖</button>
+        
+        <div style="margin-bottom: 12px;">
+            <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center; color: var(--dark);">
+                <span class="material-symbols-rounded">format_list_bulleted</span> 選擇本機匯出格式
+            </label>
+            <select id="localExportFormat" class="input-box" style="margin-bottom: 5px;">
+                <option value="joysticks">JoyStick (TRK 軌跡)</option>
+                <option value="anyTo">AnyTo / iAnyGo (TRK 軌跡)</option>
+                <option value="iTools">魅影版 / iTools (WPT 航點)</option>
+                <option value="flashman">ARflash / Flashman (WPT 航點)</option>
+                <option value="fakegps">Fake GPS (WPT 航點)</option>
+            </select>
+        </div>
+
+        <div class="action-row">
+            <button class="btn btn-success" onclick="exportLocalGPX()"><span class="material-symbols-rounded">save_alt</span> 存入本機</button>
+            <button class="btn btn-purple" id="generateLinkBtn" onclick="generateShareLink()"><span class="material-symbols-rounded">share</span> 產生分享網址</button>
+        </div>
+
+        <div id="shareLinkContainer" style="display: none; margin-top: 15px;">
+            <label style="font-weight:bold; color:var(--purple); margin-bottom:8px; display:flex; align-items:center;">
+                <span class="material-symbols-rounded">link</span> 上傳成果與通知文字：
+            </label>
+            <textarea id="shareUrlInput" class="input-box" style="height: 140px; font-family: monospace; font-size: 0.85rem;" readonly></textarea>
+            <button class="btn btn-purple" style="margin-top: 12px;" onclick="copyShareLink()"><span class="material-symbols-rounded">content_copy</span> 一鍵複製文字</button>
+            <div id="shareHint" style="text-align:center; font-size:0.85rem; color:var(--success); margin-top:8px; font-weight:500;"></div>
+        </div>
+    </div>
+</div>
+
+<div class="map-modal" id="mapModal">
+    <div class="map-content">
+        <button class="close-map-btn" onclick="closeMap()">關閉</button>
+        <div id="map"></div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    const yieldToMain = () => new Promise(resolve => setTimeout(resolve, 0));
+
+    class MinHeap {
+        constructor() { this.heap = []; }
+        push(node) {
+            this.heap.push(node);
+            this.bubbleUp(this.heap.length - 1);
         }
-    });
-}
-initFlowerSelect();
-
-
-// ==========================================
-// 花田計時器邏輯
-// ==========================================
-
-function setGlobalCooldown(hours) {
-    if (!isEditMode) return;
-    currentGlobalCooldown = hours;
-    document.getElementById('btn-quick-23').className = (hours === '23') ? 'quick-btn active' : 'quick-btn';
-    document.getElementById('btn-quick-3').className = (hours === '3') ? 'quick-btn active' : 'quick-btn';
-    document.getElementById('btn-quick-6').className = (hours === '6') ? 'quick-btn active' : 'quick-btn';
-
-    if (localPointsData) {
-        let hasUpdates = false;
-        Object.keys(localPointsData).forEach(index => {
-            let point = localPointsData[index];
-            if (point && !point.isCounting && point.cooldown !== hours) {
-                pointsRef.child(index).update({ cooldown: hours });
-                hasUpdates = true;
+        pop() {
+            if (this.heap.length === 1) return this.heap.pop();
+            const top = this.heap[0];
+            this.heap[0] = this.heap.pop();
+            this.sinkDown(0);
+            return top;
+        }
+        isEmpty() { return this.heap.length === 0; }
+        bubbleUp(idx) {
+            while (idx > 0) {
+                let parentIdx = Math.floor((idx - 1) / 2);
+                if (this.heap[idx].d >= this.heap[parentIdx].d) break;
+                [this.heap[idx], this.heap[parentIdx]] = [this.heap[parentIdx], this.heap[idx]];
+                idx = parentIdx;
             }
-        });
-        if (hasUpdates) reportConnectivityStatus("批次更改", `一鍵切換所有空閒花田預設為 ${hours} 小時`);
-    }
-}
-
-function sharePoint(index) {
-    const point = localPointsData[index], distance = point.endTime - getSyncedTime();
-    let timeStr = distance < 0 ? t.status_done : `${Math.floor(distance/3600000)}${t.time_h} ${Math.floor((distance%3600000)/60000)}${t.time_m}`;
-    const shareText = `${point.name} ${point.seedlings || 0}${t.seedling} ${point.remark || t.no_remark} ${point.coords || t.no_coord} | ${t.remaining}:${timeStr}`;
-
-    const fallbackCopy = (text) => {
-        let textArea = document.createElement("textarea");
-        textArea.value = text;
-        textArea.style.top = "0";
-        textArea.style.left = "0";
-        textArea.style.position = "fixed";
-        textArea.style.opacity = "0";
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        
-        try {
-            let successful = document.execCommand('copy');
-            if(successful) {
-                alert(t.copy_share_msg + text);
-            } else {
-                alert("瀏覽器安全限制，請手動複製以下文字：\n\n" + text);
+        }
+        sinkDown(idx) {
+            let length = this.heap.length;
+            while (true) {
+                let leftIdx = 2 * idx + 1, rightIdx = 2 * idx + 2;
+                let swapIdx = null;
+                if (leftIdx < length && this.heap[leftIdx].d < this.heap[idx].d) swapIdx = leftIdx;
+                if (rightIdx < length && this.heap[rightIdx].d < (swapIdx === null ? this.heap[idx].d : this.heap[leftIdx].d)) swapIdx = rightIdx;
+                if (swapIdx === null) break;
+                [this.heap[idx], this.heap[swapIdx]] = [this.heap[swapIdx], this.heap[idx]];
+                idx = swapIdx;
             }
-        } catch (err) {
-            alert("瀏覽器安全限制，請手動複製以下文字：\n\n" + text);
         }
-        document.body.removeChild(textArea);
-    };
-
-    if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(shareText)
-            .then(() => alert(t.copy_share_msg + shareText))
-            .catch(err => {
-                console.warn("剪貼簿 API 失敗，啟用備用方案", err);
-                fallbackCopy(shareText);
-            });
-    } else {
-        fallbackCopy(shareText);
     }
-}
 
-function copyCoords(text) { 
-    if(!text) return; 
-    navigator.clipboard.writeText(text).then(() => alert(t.copy_coord_msg + text)); 
-}
-
-function addNewPoint() { 
-    if(!isEditMode) return;
-    const newName = prompt(t.prompt_new); 
-    if (newName) {
-        reportConnectivityStatus("新增點位", "新增了花田點位: " + newName); 
-        
-        // 修正防覆蓋機制：一樣找最大號碼再 +1
-        let nextIndex = 0;
-        if (localPointsData) {
-            let maxIdx = -1;
-            Object.keys(localPointsData).forEach(k => {
-                let num = parseInt(k);
-                if (!isNaN(num) && num > maxIdx) maxIdx = num;
-            });
-            nextIndex = maxIdx + 1;
+    class SpatialGrid {
+        constructor(cellSize = 0.001) { 
+            this.cellSize = cellSize;
+            this.cells = new Map();
         }
-        
-        updateCloudData(nextIndex, '', { 
-            name: newName, planter: '', remark: '', endTime: 0, 
-            isCounting: false, coords: '', seedlings: 0, 
-            cooldown: currentGlobalCooldown, customHours: '', 
-            decorType: '', occupierUid: null
-        }, true);
-    }
-}
-
-function handleCooldownChange(index, value) { updateCloudData(index, 'cooldown', value); }
-
-function createCardHTML(point, index, isFruitTime, hasInput) {
-    const card = document.createElement('div');
-    card.id = `card-${index}`; 
-    card.className = isFruitTime ? 'point-card fruit-highlight' : (!point.isCounting && hasInput ? 'point-card occupied' : 'point-card');
-    card.style.padding = '0'; 
-
-    // 替所有輸入框加上身分證 (id)，讓系統認得它們
-    let nameHtml = isEditMode ? `<input type="text" id="p_name_${index}" class="edit-input" value="${point.name || ''}" onchange="updateCloudData(${index}, 'name', this.value)" onclick="event.stopPropagation();">` : (point.name || '');
-    let seedlingHtml = isEditMode ? `<span class="material-symbols-outlined" style="font-size:1.1em; color:inherit;">psychiatry</span> <input type="number" id="p_seed_${index}" class="edit-input edit-input-small" value="${point.seedlings || 0}" onchange="updateCloudData(${index}, 'seedlings', Number(this.value))" onclick="event.stopPropagation();"> ${t.seedling}` : `<span class="material-symbols-outlined" style="font-size:1.1em; color:inherit;">psychiatry</span> ${point.seedlings || 0} ${t.seedling}`;
-    
-    let isDetailsOpen = (hasInput || point.isCounting) ? 'open' : '';
-
-    let innerContent = `
-        <details id="details_point_${index}" ${isDetailsOpen} style="padding: 15px; outline: none;">
-            <summary style="cursor: pointer;">
-                <div style="flex:1;">
-                    <div class="point-name" style="margin-bottom: 5px;">${nameHtml} ${isFruitTime ? `<span class="fruit-tag">${t.fruit_tag}</span>` : ''}</div>
-                    <div class="seedling-badge">${seedlingHtml}</div>
-                </div>
-                <span class="material-symbols-outlined card-chevron" style="font-size: 1.5em; margin-left: auto;">expand_more</span>
-            </summary>
-            <div style="margin-top: 15px; border-top: 1px dashed var(--card-border); padding-top: 15px; cursor: auto;">
-    `;
-
-    const decorValue = point.decorType || "";
-    let decorHtml = isEditMode ? `<span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">label</span> <input type="text" id="p_decor_${index}" class="edit-input" style="width:150px;" placeholder="盆栽地區" value="${decorValue}" onchange="updateCloudData(${index}, 'decorType', this.value)">` : `<span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">label</span> ${decorValue || '無標籤'}`;
-    let coordHtml = isEditMode ? `<span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">location_on</span> <input type="text" id="p_coord_${index}" class="edit-input" style="width:180px;" placeholder="座標" value="${point.coords || ''}" onchange="updateCloudData(${index}, 'coords', this.value)">` : `<span class="material-symbols-outlined" style="font-size:1.1em; vertical-align:middle;">location_on</span> ${point.coords || t.no_data}`;
-
-    innerContent += `<div class="point-meta" style="color:var(--accent-color); font-weight:bold; font-size: 0.9em; margin-bottom: 8px; display:flex; align-items:center; gap:4px;">${decorHtml}</div>`;
-    innerContent += `<div class="point-meta" style="margin-bottom: 12px; display:flex; align-items:center; gap:4px;">${coordHtml} ${point.coords ? `<button class="btn-copy" onclick="copyCoords('${point.coords}')" style="background:transparent; border:none; cursor:pointer; display:flex; align-items:center; color:var(--meta-text);"><span class="material-symbols-outlined" style="font-size:1.1em;">content_copy</span></button>` : ''}</div>`;
-    
-    let currentUserName = document.getElementById('displayUserName') ? document.getElementById('displayUserName').innerText : '';
-    if(currentUserName === '載入中...' || currentUserName === '群友') currentUserName = '';
-
-    innerContent += `<div class="input-group">
-        <input type="text" id="p_planter_${index}" placeholder="種花者" value="${point.planter || ''}" onclick="if(!this.value && ${isEditMode}) { this.value='${currentUserName}'; updateCloudData(${index}, 'planter', this.value); } event.stopPropagation();" onchange="updateCloudData(${index}, 'planter', this.value)" ${isEditMode?'':'disabled'}>
-        <input type="text" id="p_remark_${index}" placeholder="備註" value="${point.remark || ''}" onchange="updateCloudData(${index}, 'remark', this.value)" ${isEditMode?'':'disabled'}>
-    </div>`;
-    
-    const currentCooldown = point.cooldown || currentGlobalCooldown;
-    const showCustomInput = currentCooldown === 'custom' ? 'inline-block' : 'none';
-    
-    if (point.isCounting) {
-        innerContent += `<div class="timer-display" id="timer-${index}"></div>`;
-        innerContent += `<div class="action-group" style="margin-top:10px;"><button class="btn btn-share" onclick="sharePoint(${index})">${t.share}</button>` + (isEditMode ? `<button class="btn btn-reset" onclick="resetTimer(${index})">${t.cancel_timer}</button>` : '') + `</div>`;
-    } else {
-        innerContent += `<div class="btn-start-group" style="margin-top:10px;">`;
-        if (isEditMode) {
-            innerContent += `<select id="p_cd_${index}" onchange="handleCooldownChange(${index}, this.value)"><option value="23" ${currentCooldown === '23' ? 'selected' : ''}>23 ${t.hrs}</option><option value="3" ${currentCooldown === '3' ? 'selected' : ''}>3 ${t.hrs}</option><option value="6" ${currentCooldown === '6' ? 'selected' : ''}>6 ${t.hrs}</option><option value="custom" ${currentCooldown === 'custom' ? 'selected' : ''}>${t.custom}</option></select><input type="number" id="p_custom_${index}" step="0.1" min="0" class="custom-time-input" style="display: ${showCustomInput};" placeholder="${t.hrs}" value="${point.customHours || ''}" onchange="updateCloudData(${index}, 'customHours', this.value)"><button class="btn btn-start" onclick="startTimer(${index})">${t.start_timer}</button>`;
-        } else {
-            innerContent += `<span style="font-size:0.85em; color:var(--meta-text);">(遊客僅供觀看狀態)</span>`;
+        _key(lat, lon) { return `${Math.floor(lat / this.cellSize)},${Math.floor(lon / this.cellSize)}`; }
+        insert(pt, index) {
+            const k = this._key(pt.lat, pt.lon);
+            if (!this.cells.has(k)) this.cells.set(k, []);
+            this.cells.get(k).push({ pt, index });
         }
-        innerContent += `</div>`;
-    }
-    
-    innerContent += `</div></details>`;
-    card.innerHTML = innerContent;
-    return card;
-}
-
-function renderTimer() {
-    if (!localPointsData) return;
-    if(window.UIMemory) window.UIMemory.capture(); // 記憶當前畫面狀態
-    
-    const loadingEl = document.getElementById('loading');
-    if (loadingEl) loadingEl.style.display = 'none';
-    const mainContainer = document.getElementById('main-container');
-    if (mainContainer) mainContainer.style.display = 'flex';
-
-    const pendingList = document.getElementById('pending-list'), activeList = document.getElementById('active-list');
-    let searchRaw = document.getElementById('searchInput').value.trim().toLowerCase();
-    let isSearchingFruit = searchRaw === '果實' || searchRaw === 'fruit';
-    
-    let isSeedlingSearch = searchRaw.startsWith('#');
-    let targetCount = isSeedlingSearch ? parseInt(searchRaw.substring(1)) : NaN;
-
-    pendingList.innerHTML = ''; activeList.innerHTML = '';
-    
-    let now = getSyncedTime();
-    let pendingItems = [], activeItems = [];
-    
-    let user = typeof firebase !== 'undefined' && firebase.auth ? firebase.auth().currentUser : null;
-    let isSuperAdmin = user && typeof SUPER_ADMIN_UID !== 'undefined' && user.uid === SUPER_ADMIN_UID;
-    
-    Object.keys(localPointsData).forEach(index => {
-        let point = localPointsData[index];
-        if (!point) return;
-        
-        let distance = point.isCounting ? point.endTime - now : 0;
-        let isExpired = point.isCounting && distance < 0;
-        
-        // 🌟 修改：區分「預設時間(3, 6, 23)」與「自訂時間」的果實判定邏輯
-        let currentCdString = point.cooldown || currentGlobalCooldown;
-        let isFruitTime = false;
-
-        if (currentCdString === 'custom') {
-            // 條件一：如果是「自訂時間」，只要剩餘時間 (distance) >= 22 小時，就顯示果實
-            const FRUIT_MIN_MS = 22 * 60 * 60 * 1000; // 22小時的毫秒數
-            isFruitTime = point.isCounting && !isExpired && distance >= FRUIT_MIN_MS;
+        getPointsInBounds(minLat, maxLat, minLon, maxLon) {
+            const points = [];
+            const startX = Math.floor(minLat / this.cellSize);
+            const endX = Math.floor(maxLat / this.cellSize);
+            const startY = Math.floor(minLon / this.cellSize);
+            const endY = Math.floor(maxLon / this.cellSize);
             
-        } else {
-            // 條件二：如果是預設時間 (3, 6, 23)，則計算「開花後的第一個小時內」才顯示果實
-            let cdHours = parseFloat(currentCdString);
-            if (isNaN(cdHours)) cdHours = 23; // 安全防護機制，避免取不到值
-            
-            let durationMs = cdHours * 60 * 60 * 1000; // 將預設小時轉換為總毫秒數
-            let elapsedTime = durationMs - distance;   // 計算已經開花了多久：總毫秒數 - 剩餘毫秒數
-            
-            // elapsedTime 在 0 ~ 3600000 毫秒 (1小時) 之間時，判定為果實時間
-            isFruitTime = point.isCounting && !isExpired && elapsedTime >= 0 && elapsedTime <= 3600000;
-        }
-        
-        let displayPoint = { ...point };
-        if (isExpired) {
-            displayPoint.isCounting = false;
-            displayPoint.planter = '';
-            displayPoint.remark = '';
-            displayPoint.occupierUid = null;
-        }
-
-        let hasInput = !displayPoint.isCounting && ((displayPoint.planter && displayPoint.planter.trim()) || (displayPoint.remark && displayPoint.remark.trim()));
-        
-        if (hasInput) {
-            if (!isSuperAdmin && user && displayPoint.occupierUid !== user.uid) {
-                return; 
-            }
-        }
-        
-        // 🌟 修正2：搜尋果實邏輯修復，若不是果實時間則直接攔截
-        if (isSearchingFruit && !isFruitTime) {
-            return; 
-        }
-        
-        if (searchRaw && !isSearchingFruit && !isSeedlingSearch) {
-            const nameMatch = (displayPoint.name || "").toLowerCase().includes(searchRaw);
-            const planterMatch = (displayPoint.planter || "").toLowerCase().includes(searchRaw);
-            const decorMatch = (displayPoint.decorType || "").toLowerCase().includes(searchRaw);
-            if (!nameMatch && !planterMatch && !decorMatch) return;
-        }
-        
-        if (displayPoint.isCounting) {
-            if (isSeedlingSearch) return;
-            activeItems.push({ point: displayPoint, index, distance, isFruitTime });
-        } else {
-            pendingItems.push({ point: displayPoint, index, hasInput });
-        }
-    });
-
-    if (isSeedlingSearch && !isNaN(targetCount)) {
-        let minDiff = Infinity;
-        pendingItems.forEach(item => {
-            let diff = Math.abs((parseInt(item.point.seedlings) || 0) - targetCount);
-            if (diff < minDiff) minDiff = diff;
-        });
-        pendingItems = pendingItems.filter(item => 
-            Math.abs((parseInt(item.point.seedlings) || 0) - targetCount) === minDiff
-        );
-    }
-
-    activeItems.sort((a, b) => b.distance - a.distance);
-    activeItems.forEach(item => activeList.appendChild(createCardHTML(item.point, item.index, item.isFruitTime, false)));
-
-    if (typeof window.activeIdleTab === 'undefined') window.activeIdleTab = '印';
-
-    const getNum = (name) => {
-        let m = (name || '').match(/\d+/);
-        return m ? parseInt(m[0], 10) : 999999;
-    };
-
-    let categories = { '印': [], '菲': [], '澳': [], '其他': [] };
-    pendingItems.forEach(item => {
-        let firstChar = (item.point.name || '').trim().charAt(0);
-        if (firstChar === '印') categories['印'].push(item);
-        else if (firstChar === '菲') categories['菲'].push(item);
-        else if (firstChar === '澳') categories['澳'].push(item);
-        else categories['其他'].push(item);
-    });
-
-    Object.keys(categories).forEach(k => {
-        categories[k].sort((a, b) => {
-            if (a.hasInput !== b.hasInput) return a.hasInput ? 1 : -1; 
-            let numA = getNum(a.point.name);
-            let numB = getNum(b.point.name);
-            if (numA !== numB) return numA - numB; 
-            else return (a.point.name || '').localeCompare((b.point.name || ''), 'zh-TW');
-        });
-    });
-
-    // 高級 UI：可滑動的藥丸標籤 (Pill Tabs)，絕不擠在一起
-    let tabsHtml = `<div style="display:flex; gap:10px; margin-bottom:15px; overflow-x:auto; padding:5px 2px; scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; scrollbar-width: none;">`;
-    tabsHtml += `<style>#pending-list div::-webkit-scrollbar { display: none; }</style>`; // 隱藏滾動條讓畫面更乾淨
-    
-    ['印', '菲', '澳', '其他'].forEach(k => {
-        if (k === '其他' && categories[k].length === 0) return;
-        let isActive = (window.activeIdleTab === k);
-        
-        let bgStyle = isActive 
-            ? 'background: linear-gradient(135deg, #8e44ad, #9b59b6); color: white; border-color: transparent; box-shadow: 0 4px 10px rgba(142,68,173,0.3); transform: translateY(-2px);' 
-            : 'background: var(--input-bg); color: var(--meta-text); border-color: var(--input-border);';
-            
-        let tabName = k === '印' ? '印度' : (k === '菲' ? '菲律賓' : (k === '澳' ? '澳洲' : '其他'));
-        
-        // 關鍵修復：flex: 0 0 auto 讓按鈕保持最舒服的寬度，超出螢幕就用手指左右滑動
-        tabsHtml += `<button style="flex: 0 0 auto; scroll-snap-align: start; padding: 8px 18px; border-radius: 20px; border: 1px solid; cursor:pointer; font-weight:bold; font-size: 0.95em; white-space:nowrap; transition: all 0.3s ease; ${bgStyle}" onclick="window.activeIdleTab='${k}'; renderTimerDebounced();">${tabName} (${categories[k].length})</button>`;
-    });
-    tabsHtml += `</div>`;
-
-    pendingList.innerHTML = tabsHtml;
-
-    let currentItems = categories[window.activeIdleTab] || [];
-    if (currentItems.length === 0) {
-        pendingList.innerHTML += `<div style="text-align:center; padding:20px; color:var(--meta-text);">目前無空閒花田</div>`;
-    } else {
-        currentItems.forEach(item => pendingList.appendChild(createCardHTML(item.point, item.index, false, item.hasInput)));
-        let jumpButtons = document.createElement('div');
-        jumpButtons.style.cssText = "position: fixed; right: 15px; bottom: 30px; display: flex; flex-direction: column; gap: 15px; z-index: 9999;";
-        jumpButtons.innerHTML = `
-            <button onclick="window.scrollTo({top: 0, behavior: 'smooth'})" style="width: 44px; height: 44px; border-radius: 50%; background: var(--card-bg); border: 1.5px solid var(--card-border); box-shadow: 0 4px 10px rgba(0,0,0,0.15); cursor: pointer; display:flex; justify-content:center; align-items:center; padding: 0; backdrop-filter: blur(4px); transition: all 0.2s; color:var(--text-color);" onmouseover="this.style.background='var(--input-bg)'; this.style.transform='scale(1.1)'" onmouseout="this.style.background='var(--card-bg)'; this.style.transform='scale(1)'"><span class="material-symbols-outlined">arrow_upward</span></button>
-            <button onclick="window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'})" style="width: 44px; height: 44px; border-radius: 50%; background: var(--card-bg); border: 1.5px solid var(--card-border); box-shadow: 0 4px 10px rgba(0,0,0,0.15); cursor: pointer; display:flex; justify-content:center; align-items:center; padding: 0; backdrop-filter: blur(4px); transition: all 0.2s; color:var(--text-color);" onmouseover="this.style.background='var(--input-bg)'; this.style.transform='scale(1.1)'" onmouseout="this.style.background='var(--card-bg)'; this.style.transform='scale(1)'"><span class="material-symbols-outlined">arrow_downward</span></button>
-        `;
-        pendingList.appendChild(jumpButtons);
-    }
-
-    const idleCountEl = document.getElementById('idleCount');
-    const cdCountEl = document.getElementById('cdCount');
-    if (idleCountEl) idleCountEl.innerText = pendingItems.length;
-    if (cdCountEl) cdCountEl.innerText = activeItems.length;
-    if(typeof renderOverviewMap === 'function') renderOverviewMap();
-    
-    // 新增：自動抓取全區「卡位備註」並渲染到新面板 (不顯示暱稱)
-    let remarksHtml = '';
-    let hasRemarks = false;
-    pendingItems.forEach(item => {
-        let p = item.point;
-        if (p.remark && p.remark.trim() !== '') {
-            hasRemarks = true;
-            // 過濾危險符號以防破圖
-            let safeRemark = p.remark.trim().replace(/[&<>'"]/g, tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag));
-            remarksHtml += `<div style="background:var(--input-bg); padding:12px 15px; border-radius:8px; border-left:5px solid #f39c12; font-weight:bold; color:var(--text-color); box-shadow:0 2px 4px rgba(0,0,0,0.05); font-size: 1.05em; display:flex; align-items:center; gap:8px;"><span class="material-symbols-outlined" style="font-size:1.1em; color:#f39c12;">push_pin</span> ${safeRemark}</div>`;
-        }
-    });
-    
-    let remarksContainer = document.getElementById('remarksPanelContainer');
-    if (remarksContainer) {
-        remarksContainer.innerHTML = hasRemarks ? remarksHtml : '<div style="padding:15px; color:var(--meta-text); text-align:center; font-weight:bold;">目前無任何卡位備註。</div>';
-    }
-
-    if(window.UIMemory) window.UIMemory.restore(); // 完美復原畫面狀態
-}
-
-
-window.switchTimerView = function(view) {
-    document.getElementById('segIdle').className = (view === 'idle') ? 'segment-btn active' : 'segment-btn';
-    document.getElementById('segCooldown').className = (view === 'cooldown') ? 'segment-btn active' : 'segment-btn';
-    document.getElementById('colIdle').style.display = (view === 'idle') ? 'block' : 'none';
-    document.getElementById('colCooldown').style.display = (view === 'cooldown') ? 'block' : 'none';
-};
-
-
-    
-function updateCloudData(index, field, value, isNew = false) { 
-    
-    window.targetScrollCardIndex = index; 
-    if(!isEditMode || !window.requireNetwork()) return;
-    
-    // 取得當前操作者 UID
-    let user = typeof firebase !== 'undefined' && firebase.auth ? firebase.auth().currentUser : null;
-    let currentUid = user ? user.uid : null;
-
-    if (isNew) {
-        pointsRef.child(index).set(value);
-        return;
-    } 
-    
-    // 🌟 捨棄舊版直接 update，全面升級為 Firebase Transaction 雲端交易鎖
-    pointsRef.child(index).transaction((currentData) => {
-        // 🌟 修正3：如果雲端找不到這筆資料，必須回傳 undefined 來安全終止交易，絕對不可回傳 null，否則會刪除該節點
-        if (currentData === null) return undefined; 
-
-        let now = getSyncedTime();
-
-        // 1. 先處理過期狀態重置
-        if (currentData.isCounting && currentData.endTime > 0 && currentData.endTime < now) {
-            currentData.isCounting = false;
-            currentData.endTime = 0;
-            currentData.planter = '';
-            currentData.remark = '';
-            currentData.occupierUid = null;
-        }
-
-        // 2. 處理卡位者的 UID 紀錄與清除 (Race Condition 防護核心)
-        if (field === 'planter' || field === 'remark') {
-            // 抓取準備寫入的新狀態
-            let futurePlanter = field === 'planter' ? value : (currentData.planter || '');
-            let futureRemark = field === 'remark' ? value : (currentData.remark || '');
-
-            // 🛡️ 核心防護邏輯：
-            // 如果這塊田已經有主人 (occupierUid 有值)
-            // 而且主人不是當前操作者 ( !== currentUid )
-            // 而且操作者也不是超級管理員 ( !== SUPER_ADMIN_UID )
-            // -> 判定為「碰撞」，直接回傳 undefined 強制中止寫入！
-            if (currentData.occupierUid && currentData.occupierUid !== currentUid && currentUid !== SUPER_ADMIN_UID) {
-                return undefined; 
-            }
-
-            if (!futurePlanter.trim() && !futureRemark.trim()) {
-                currentData.occupierUid = null; // 兩欄皆空，釋放佔位
-            } else if (!currentData.occupierUid && currentUid) {
-                currentData.occupierUid = currentUid; // 空白變有字，記錄是誰先佔位的
-            }
-        }
-
-        // 3. 套用更新的值
-        currentData[field] = value;
-
-        return currentData; // 提交這包更新回雲端排隊
-
-    }, (error, committed, snapshot) => {
-        // 交易完成後的回呼判斷
-        if (error) {
-            alert("更新發生異常：" + error.message);
-        } else if (!committed) {
-            // committed 為 false 代表交易被我們中止了 (別人搶先了)
-            alert("⚠️ 這個花田剛剛已經被其他群友先卡位了喔！");
-            if (typeof renderTimerDebounced === 'function') renderTimerDebounced(); // 強制刷新畫面顯示贏家的名字
-        } else {
-            // 交易成功，發送廣播提示
-            const fieldNames = {
-                'name': '花田名稱', 'seedlings': '苗數', 'decorType': '盆栽地區',
-                'coords': '座標', 'planter': '種花者', 'remark': '備註',
-                'customHours': '自訂小時數', 'cooldown': '預設冷卻時間'
-            };
-            let fieldZh = fieldNames[field] || field;
-            let pName = snapshot.val() ? snapshot.val().name : '未知花田';
-            if(typeof reportConnectivityStatus === 'function') {
-                reportConnectivityStatus("更改內容", `修改了 [${pName}] 的「${fieldZh}」為「${value}」`);
-            }
-        }
-    });
-}
-
-function startTimer(index) {
-    if(!isEditMode) return;
-    const point = localPointsData[index]; 
-    window.targetScrollCardIndex = index;
-    let hours = 23; 
-    const currentCooldown = point.cooldown || currentGlobalCooldown;
-    if (currentCooldown === 'custom') { 
-        hours = parseFloat(point.customHours);
-        if (isNaN(hours) || hours <= 0) { alert(t.alert_custom); return; } 
-    } else { 
-        hours = parseFloat(currentCooldown);
-    }
-    
-    const syncedNow = getSyncedTime();
-    const durationMs = hours * 60 * 60 * 1000;
-    
-    // 啟動計時不清除 occupierUid，確保邏輯完整
-    pointsRef.child(index).update({ isCounting: true, endTime: syncedNow + durationMs });
-    reportConnectivityStatus("開始倒數", `啟動了倒數計時: ${point.name}`);
-}
-
-function resetTimer(index) { 
-    if(!isEditMode) return;
-    if (confirm(t.confirm_reset)) {
-        window.targetScrollCardIndex = index;
-        pointsRef.child(index).update({ isCounting: false, endTime: 0, planter: '', remark: '', occupierUid: null });
-        reportConnectivityStatus("提前結束", `取消了倒數計時: ${localPointsData[index].name}`);
-    }
-}
-
-function checkMidnightReset() {
-    if (!localPointsData || !isEditMode) return;
-
-    const twTime = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Taipei"}));
-    const twDateStr = twTime.getFullYear() + '-' + (twTime.getMonth() + 1) + '-' + twTime.getDate();
-
-    if (localCheckedDate === twDateStr) return;
-
-    // 🌟 修正4：使用 Transaction 雲端鎖，防止跨夜瞬間大量客戶端同時觸發資料重置的風暴覆蓋問題
-    database.ref('_sys_config/lastResetDate').transaction((cloudLastReset) => {
-        if (cloudLastReset === twDateStr) {
-            return undefined; // 別人已經清空過了，終止交易
-        }
-        return twDateStr; // 將日期更新為今天
-    }, (error, committed) => {
-        if (committed) {
-            // 只有「搶到修改權」的那唯一一個客戶端，才有資格發送批次清空指令
-            let updates = {};
-            Object.keys(localPointsData).forEach(index => {
-                let point = localPointsData[index];
-                if (point && !point.isCounting && (point.planter || point.remark)) {
-                    updates[`${index}/planter`] = '';
-                    updates[`${index}/remark`] = '';
-                    updates[`${index}/occupierUid`] = null; // 午夜清空一併釋放
-                }
-            });
-
-            if (Object.keys(updates).length > 0) {
-                pointsRef.update(updates);
-            }
-            console.log("雲端清道夫執行完畢，已清空今日過期備註。");
-        }
-        localCheckedDate = twDateStr;
-    });
-}
-
-// 頂級安全版計時器
-setInterval(() => {
-    if(!localPointsData) return; 
-    if(!isTimeSynced) return; 
-    const now = getSyncedTime();
-    checkMidnightReset();
-
-    let needsRender = false; 
-
-    Object.keys(localPointsData).forEach(index => { 
-        let point = localPointsData[index];
-        if (point && point.isCounting) {
-            const distance = point.endTime - now;
-            const el = document.getElementById(`timer-${index}`);
-            
-            if (distance < 0) {
-                if (!point._visualExpired) {
-                    point._visualExpired = true;
-                    needsRender = true; 
+            for (let x = startX; x <= endX; x++) {
+                for (let y = startY; y <= endY; y++) {
+                    const k = `${x},${y}`;
+                    if (this.cells.has(k)) {
+                        for (let item of this.cells.get(k)) points.push(item.pt);
+                    }
                 }
             }
-            else {
-                point._visualExpired = false; 
-                if (el) {
-                    let h = Math.floor(distance/3600000).toString().padStart(2, '0');
-                    let m = Math.floor((distance%3600000)/60000).toString().padStart(2, '0');
-                    let s = Math.floor((distance%60000)/1000).toString().padStart(2, '0');
-                    el.innerText = `${t.remaining}：${h}${t.time_h} ${m}${t.time_m} ${s}${t.time_s}`;
-                }
-            }
+            return points;
         }
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+        const savedToken = localStorage.getItem("user_gofile_api_token");
+        if (savedToken) document.getElementById("userGofileToken").value = savedToken;
     });
 
-    if (needsRender) renderTimer(); 
-}, 1000);
-
-// ==========================================
-// Firebase 資料庫即時監聽
-// ==========================================
-pointsRef.on('child_added', snap => { 
-    localPointsData[snap.key] = snap.val(); 
-    renderTimerDebounced(); 
-    renderWishlistDebounced(); 
-});
-pointsRef.on('child_changed', snap => { 
-    localPointsData[snap.key] = snap.val(); 
-    renderTimerDebounced(); 
-    renderWishlistDebounced(); 
-});
-pointsRef.on('child_removed', snap => { 
-    delete localPointsData[snap.key]; 
-    renderTimerDebounced(); 
-    renderWishlistDebounced(); 
-});
-
-window.initWishlistListeners = function() {
-    wishRef.off(); localWishData = {};
-    wishRef.on('child_added', snap => { localWishData[snap.key] = snap.val(); renderWishlistDebounced(); });
-    wishRef.on('child_changed', snap => { localWishData[snap.key] = snap.val(); renderWishlistDebounced(); });
-    wishRef.on('child_removed', snap => { delete localWishData[snap.key]; renderWishlistDebounced(); });
-};
-// ==========================================
-// 上帝視角：凸包演算法、GPX匯入與地圖渲染
-// ==========================================
-
-// 1. 精確路徑簡化 (不再使用凸包) - 讓範圍緊貼路徑，避免重疊
-function getSimplifiedPath(points, tolerance = 0.00005) {
-    if (points.length <= 2) return points;
-    const sqTolerance = tolerance * tolerance;
-
-    function getSqDist(p1, p2) {
-        const dx = p1.lat - p2.lat, dy = p1.lon - p2.lon;
-        return dx * dx + dy * dy;
-    }
-
-    function getSqSegDist(p, p1, p2) {
-        let x = p1.lat, y = p1.lon, dx = p2.lat - x, dy = p2.lon - y;
-        if (dx !== 0 || dy !== 0) {
-            let t = ((p.lat - x) * dx + (p.lon - y) * dy) / (dx * dx + dy * dy);
-            if (t > 1) { x = p2.lat; y = p2.lon; }
-            else if (t > 0) { x += dx * t; y += dy * t; }
-        }
-        dx = p.lat - x; dy = p.lon - y;
-        return dx * dx + dy * dy;
-    }
-
-    function simplifyDPStep(points, first, last, sqTolerance, simplified) {
-        let maxSqDist = sqTolerance, index;
-        for (let i = first + 1; i < last; i++) {
-            let sqDist = getSqSegDist(points[i], points[first], points[last]);
-            if (sqDist > maxSqDist) { index = i; maxSqDist = sqDist; }
-        }
-        if (maxSqDist > sqTolerance) {
-            if (index - first > 1) simplifyDPStep(points, first, index, sqTolerance, simplified);
-            simplified.push(points[index]);
-            if (last - index > 1) simplifyDPStep(points, index, last, sqTolerance, simplified);
+    function updateFileName() {
+        const fileInput = document.getElementById('fileInput');
+        const display = document.getElementById('fileNameDisplay');
+        if (fileInput.files.length > 0) {
+            display.innerText = "已選擇: " + fileInput.files[0].name;
+            display.style.display = "block";
+        } else {
+            display.style.display = "none";
         }
     }
 
-    let simplified = [points[0]];
-    simplifyDPStep(points, 0, points.length - 1, sqTolerance, simplified);
-    simplified.push(points[points.length - 1]);
-    return simplified;
-}
-
-
-// 2. 批量解析 GPX 並匯入資料庫 (終極防蓋台安全版)
-window.handleMapGpxUpload = async function(event) {
-    let files = event.target.files;
-    if(!files || files.length === 0) return;
-    
-    let fileArray = Array.from(files).sort((a, b) => a.name.localeCompare(b.name));
-    
-    let stats = { success: 0, updated: 0, skipped: 0, fail: 0 };
-    let updates = {};
-    
-    // 核心修復：尋找當前資料庫中「最大」的編號，而不是「算有幾個」！
-    // 這樣就算中間有刪除過花田留下空洞，也絕對不會把別人的位置蓋掉！
-    let nextIndex = 0;
-    if (localPointsData) {
-        let maxIdx = -1;
-        Object.keys(localPointsData).forEach(k => {
-            let num = parseInt(k);
-            if (!isNaN(num) && num > maxIdx) {
-                maxIdx = num;
-            }
-        });
-        nextIndex = maxIdx + 1;
-    }
-    
-    let parser = new DOMParser();
-    let groupedData = {}; 
-
-    for (let file of fileArray) {
-        let filename = file.name.replace('.gpx', '').trim();
-        
-        let match = filename.match(/^(.*?)\s*(\d+)\s*收/);
-        if (!match) { stats.fail++; continue; }
-        
-        let fullName = match[1].replace(/\s+/g, ''); 
-        let seedlings = parseInt(match[2]);
-        
-        try {
-            let text = await file.text();
-            let xmlDoc = parser.parseFromString(text, "text/xml");
-            
-            let trkpts = xmlDoc.getElementsByTagName("trkpt");
-            if (trkpts.length === 0) trkpts = xmlDoc.getElementsByTagName("wpt");
-            
-            if (!groupedData[fullName]) {
-                groupedData[fullName] = { seedlings: seedlings, pts: [] };
-            } else {
-                groupedData[fullName].seedlings += seedlings;
-            }
-
-            for (let i = 0; i < trkpts.length; i++) {
-                let lat = parseFloat(trkpts[i].getAttribute("lat"));
-                let lon = parseFloat(trkpts[i].getAttribute("lon"));
-                if (!isNaN(lat) && !isNaN(lon)) groupedData[fullName].pts.push({ lat, lon });
-            }
-        } catch (e) { stats.fail++; }
+    function toggleDensifySettings() {
+        const isChecked = document.getElementById('densifyCheck').checked;
+        document.getElementById('stepSettings').style.display = isChecked ? 'flex' : 'none';
     }
 
-    for (let fullName in groupedData) {
-        let data = groupedData[fullName];
+    function clearInput() {
+        document.getElementById('fileInput').value = "";
+        document.getElementById('fileNameDisplay').style.display = "none";
+        document.getElementById('coordInput').value = "";
+        document.getElementById('customFileName').value = "";
+        document.getElementById('resultCard').style.display = 'none';
+        document.getElementById('shareLinkContainer').style.display = 'none';
         
-        if (data.pts.length < 3) { stats.fail++; continue; }
+        originalPoints = []; generatedPoints = [];
+        if(originalLayerGroup) originalLayerGroup.clearLayers();
+        if(generatedLayerGroup) generatedLayerGroup.clearLayers();
+    }
 
-        let hull = getSimplifiedPath(data.pts);
-        let existingIndex = -1;
-        let isAlreadySame = false;
-        
-        if(localPointsData) {
-            Object.keys(localPointsData).forEach(idx => {
-                let p = localPointsData[idx];
-                if (p && p.name === fullName) {
-                    existingIndex = idx;
-                    if (p.hull && Math.abs(p.hull.length - hull.length) <= 5) isAlreadySame = true;
+    let map, originalLayerGroup, generatedLayerGroup;
+    try {
+        map = L.map('map').setView([22.645, 120.315], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
+        originalLayerGroup = L.layerGroup().addTo(map);
+        generatedLayerGroup = L.layerGroup().addTo(map);
+    } catch(e) { console.error("地圖載入失敗", e); }
+
+    let originalPoints = [];
+    let generatedPoints = [];
+    let originalGrid = new SpatialGrid();
+
+    function openMap() {
+        const modal = document.getElementById('mapModal');
+        modal.style.display = 'flex';
+        setTimeout(() => {
+            modal.style.opacity = '1';
+            if(map) {
+                map.invalidateSize();
+                const origLatLngs = originalPoints.map(p => [p.lat, p.lon]);
+                const genLatLngs = generatedPoints.map(p => [p.lat, p.lon]);
+                const allPoints = origLatLngs.concat(genLatLngs);
+                if (allPoints.length > 0) map.fitBounds(L.latLngBounds(allPoints), { padding: [30, 30] });
+            }
+        }, 50); 
+    }
+
+    function closeMap() {
+        const modal = document.getElementById('mapModal');
+        modal.style.opacity = '0';
+        setTimeout(() => { modal.style.display = 'none'; }, 300);
+    }
+
+    function getBearing(lat1, lon1, lat2, lon2) {
+        const lat1_rad = lat1 * Math.PI / 180, lat2_rad = lat2 * Math.PI / 180, diff_lon = (lon2 - lon1) * Math.PI / 180;
+        const x = Math.sin(diff_lon) * Math.cos(lat2_rad);
+        const y = Math.cos(lat1_rad) * Math.sin(lat2_rad) - Math.sin(lat1_rad) * Math.cos(lat2_rad) * Math.cos(diff_lon);
+        return (Math.atan2(x, y) * 180 / Math.PI + 360) % 360;
+    }
+
+    function getDestination(lat, lon, distance, bearing) {
+        const R = 6378137, lat1 = lat * Math.PI / 180, lon1 = lon * Math.PI / 180, brng = bearing * Math.PI / 180;
+        const lat2 = Math.asin(Math.sin(lat1) * Math.cos(distance / R) + Math.cos(lat1) * Math.sin(distance / R) * Math.cos(brng));
+        const lon2 = lon1 + Math.atan2(Math.sin(brng) * Math.sin(distance / R) * Math.cos(lat1), Math.cos(distance / R) - Math.sin(lat1) * Math.sin(lat2));
+        return { lat: lat2 * 180 / Math.PI, lon: lon2 * 180 / Math.PI };
+    }
+
+    function getDistance(lat1, lon1, lat2, lon2) {
+        const R = 6378137, dLat = (lat2 - lat1) * Math.PI / 180, dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    function getSegmentDistance(latA, lonA, latB, lonB, latC, lonC) {
+        const R = 6378137, latMid = (latA + latB) / 2 * Math.PI / 180;
+        const dxB = (lonB - lonA) * Math.PI / 180 * Math.cos(latMid) * R, dyB = (latB - latA) * Math.PI / 180 * R;
+        const dxC = (lonC - lonA) * Math.PI / 180 * Math.cos(latMid) * R, dyC = (latC - latA) * Math.PI / 180 * R;
+        const l2 = dxB * dxB + dyB * dyB; if (l2 === 0) return getDistance(latA, lonA, latC, lonC); 
+        let t = Math.max(0, Math.min(1, (dxC * dxB + dyC * dyB) / l2)); 
+        return Math.hypot(dxC - t * dxB, dyC - t * dyB);
+    }
+
+    function parseData(text, isGPX) {
+        originalPoints = [];
+        originalGrid = new SpatialGrid();
+        if (isGPX) {
+            const xmlDoc = new DOMParser().parseFromString(text, "text/xml");
+            for (let type of ['trkpt', 'rtept', 'wpt']) {
+                const nodes = xmlDoc.getElementsByTagName(type);
+                if (nodes.length > 0) {
+                    for (let i = 0; i < nodes.length; i++) {
+                        const lat = parseFloat(nodes[i].getAttribute('lat')), lon = parseFloat(nodes[i].getAttribute('lon'));
+                        if (!isNaN(lat) && !isNaN(lon)) {
+                            let pt = { lat, lon };
+                            originalPoints.push(pt);
+                            originalGrid.insert(pt, originalPoints.length - 1);
+                        }
+                    } break;
+                }
+            }
+        } else {
+            text.split('\n').forEach(line => {
+                const parts = line.split(/[,\s\t]+/).filter(Boolean);
+                if (parts.length >= 2) {
+                    const lat = parseFloat(parts[0]), lon = parseFloat(parts[1]);
+                    if (!isNaN(lat) && !isNaN(lon)) {
+                        let pt = { lat, lon };
+                        originalPoints.push(pt);
+                        originalGrid.insert(pt, originalPoints.length - 1);
+                    }
                 }
             });
         }
-
-        if (isAlreadySame) {
-            stats.skipped++;
-        } else if (existingIndex !== -1) {
-            updates[`${existingIndex}/hull`] = hull;
-            updates[`${existingIndex}/seedlings`] = data.seedlings;
-            stats.updated++;
-        } else {
-            // 安全寫入全新編號
-            updates[`${nextIndex}`] = {
-                name: fullName, seedlings: data.seedlings, hull: hull,
-                planter: '', remark: '', endTime: 0, isCounting: false, coords: '',
-                cooldown: currentGlobalCooldown, customHours: '', decorType: '', occupierUid: null
-            };
-            nextIndex++;
-            stats.success++;
-        }
-    }
-    
-    if(Object.keys(updates).length > 0) await pointsRef.update(updates);
-    
-    alert(`匯入報告：\n新增：${stats.success} 區\n更新：${stats.updated} 區\n已存在跳過：${stats.skipped} 區\n失敗：${stats.fail} 個檔案`);
-    event.target.value = ''; 
-};
-
-// 判斷中心點是否在多邊形內的演算法 (Ray-casting)
-function isPointInPolygon(lat, lon, hull) {
-    let inside = false;
-    let x = lon, y = lat;
-    for (let i = 0, j = hull.length - 1; i < hull.length; j = i++) {
-        let xi = hull[i].lon, yi = hull[i].lat;
-        let xj = hull[j].lon, yj = hull[j].lat;
-        let intersect = ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
-        if (intersect) inside = !inside;
-    }
-    return inside;
-}
-
-// 3. 渲染地圖 
-let overviewMap = null;
-let mapLayers = [];
-
-window.renderOverviewMap = function() {
-    let container = document.getElementById('overviewMap');
-    let wrapper = document.getElementById('overviewMapWrapper');
-    if(!container || !wrapper) return;
-
-    // 1. 限制條件：只有在「印」的標籤頁才顯示地圖功能！
-    if (window.activeIdleTab !== '印') {
-        wrapper.style.display = 'none';
-        return;
-    } else {
-        wrapper.style.display = 'block';
     }
 
-    if(!wrapper._hasListener) {
-        wrapper.addEventListener('toggle', function(e) {
-            if (e.target.open && overviewMap) { setTimeout(() => { overviewMap.invalidateSize(); }, 100); }
-        });
-        wrapper._hasListener = true;
+    async function densifyRouteAsync(points, minStep, maxStep) {
+        if (points.length < 2) return points;
+        const densePoints = [points[0]];
+        for (let i = 0; i < points.length - 1; i++) {
+            if (i % 200 === 0) await yieldToMain();
+            const p1 = points[i], p2 = points[i + 1];
+            const totalDist = getDistance(p1.lat, p1.lon, p2.lat, p2.lon);
+            if (totalDist > maxStep) {
+                const bearing = getBearing(p1.lat, p1.lon, p2.lat, p2.lon);
+                let currentDist = Math.random() * (maxStep - minStep) + minStep;
+                while (currentDist < totalDist) {
+                    densePoints.push(getDestination(p1.lat, p1.lon, currentDist, bearing));
+                    currentDist += Math.random() * (maxStep - minStep) + minStep;
+                }
+            } 
+            densePoints.push(p2);
+        } 
+        return densePoints;
     }
 
-    if (!overviewMap) {
-        overviewMap = L.map('overviewMap').setView([0, 0], 2);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { opacity: 0.8 }).addTo(overviewMap);
+    async function generateSmartPointsAsync() {
+        generatedPoints = []; 
+        const n = originalPoints.length; 
+        if (n === 0) return;
         
-        // 2. 語意縮放邏輯：當地圖放大到 16 級時，直接顯示所有標籤！
-        overviewMap.on('zoomend', function() {
-            if (overviewMap.getZoom() >= 16) document.body.classList.add('show-map-labels');
-            else document.body.classList.remove('show-map-labels');
-        });
-    }
+        let allSafeNodes = [];
+        let circleNodes = Array(n).fill(null).map(() => []);
+        let nodeId = 0;
 
-    // 解除上一次的視角鎖定
-    overviewMap.setMaxBounds(null);
-    overviewMap.setMinZoom(0);
-
-    mapLayers.forEach(l => overviewMap.removeLayer(l));
-    mapLayers = [];
-
-    let bounds = L.latLngBounds();
-    let hasCurrentCategoryData = false;
-    let now = getSyncedTime();
-    let user = typeof firebase !== 'undefined' && firebase.auth ? firebase.auth().currentUser : null;
-    let isSuperAdmin = user && typeof SUPER_ADMIN_UID !== 'undefined' && user.uid === SUPER_ADMIN_UID;
-
-    if(!localPointsData) return;
-
-    Object.keys(localPointsData).forEach(index => {
-        let point = localPointsData[index];
-        if (!point || !point.hull || point.hull.length < 3) return;
-        
-        // 雙重限制：只畫出名字開頭是「印」的座標範圍
-        if (point.name.charAt(0) !== '印') return;
-
-        let distance = point.isCounting ? point.endTime - now : 0;
-        let isExpired = point.isCounting && distance < 0;
-        let isCounting = point.isCounting && !isExpired;
-
-        let hasInput = !isCounting && ((point.planter && point.planter.trim()) || (point.remark && point.remark.trim()));
-        let isOwner = user && point.occupierUid === user.uid;
-
-        let fillColor = isCounting ? '#e74c3c' : '#2ecc71';
-        let borderColor = isCounting ? '#c0392b' : '#27ae60';
-
-        let latlngs = point.hull.map(p => [p.lat, p.lon]);
-        latlngs.forEach(ll => bounds.extend(ll));
-        hasCurrentCategoryData = true;
-
-        let polygon = L.polygon(latlngs, { color: borderColor, fillColor: fillColor, fillOpacity: 0.4, weight: 2 }).addTo(overviewMap);
-        mapLayers.push(polygon);
-
-        // 3. 算出這塊田的正中心點，並貼上無底色的精美數字
-        let clat = point.hull.reduce((sum, p) => sum + p.lat, 0) / point.hull.length;
-        let clon = point.hull.reduce((sum, p) => sum + p.lon, 0) / point.hull.length;
-        let numMatch = point.name.match(/[0-9a-zA-Z]+/);
-        let displayNum = numMatch ? numMatch[0] : point.name;
-
-        // 數字顏色跟著邊框走：空閒為綠字、冷卻為紅字
-        let labelIcon = L.divIcon({ className: 'map-label-icon', html: `<div style="color: ${borderColor};">${displayNum}</div>`, iconSize: [0, 0] });
-        let marker = L.marker([clat, clon], { icon: labelIcon, interactive: false }).addTo(overviewMap);
-        mapLayers.push(marker);
-
-        polygon.on('click', () => {
-            if (hasInput && !isSuperAdmin && !isOwner) {
-                L.popup().setLatLng([clat, clon]).setContent(`<b style="color:#c0392b;">${point.name}</b><br><span class="material-symbols-outlined" style="font-size: 1.1em; color: #c0392b; vertical-align: middle;">block</span> 有人已卡位`).openOn(overviewMap);
-            } else {
-                let card = document.getElementById(`card-${index}`);
-                if (card) {
-                    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        for (let i = 0; i < n; i++) {
+            if (i % 100 === 0) await yieldToMain(); 
+            let center = originalPoints[i];
+            
+            for (let a = 0; a < 360; a += 15) { 
+                // 距離圓心 60~70 公尺中隨機偏移
+                let testDist = 60 + Math.random() * 10;
+                let pt, isSafe;
+                
+                // 只要距離大於 50，就一直測試並向圓心退縮（-1m）
+                while (testDist > 50) {
+                    pt = getDestination(center.lat, center.lon, testDist, a);
+                    isSafe = true;
                     
-                    // 4. 動態強制寫入閃爍特效 (破解 CSS 最高權限的封鎖)
-                    card.style.setProperty('background-color', '#fff3cd', 'important');
-                    card.style.setProperty('box-shadow', '0 0 20px #f1c40f', 'important');
-                    card.style.setProperty('border', '2px solid #f39c12', 'important');
-                    card.style.setProperty('transform', 'scale(1.02)', 'important');
-                    card.style.setProperty('transition', 'all 0.3s ease', 'important');
+                    // 擴大搜索範圍以涵蓋 70m 的極端值
+                    let nearbyPoints = originalGrid.getPointsInBounds(pt.lat - 0.001, pt.lat + 0.001, pt.lon - 0.001, pt.lon + 0.001);
                     
-                    // 1.5 秒後自動恢復原狀
-                    setTimeout(() => {
-                        card.style.removeProperty('background-color');
-                        card.style.removeProperty('box-shadow');
-                        card.style.removeProperty('border');
-                        card.style.removeProperty('transform');
-                    }, 1500);
-                } else {
-                    alert(`提示：${point.name} 目前不在列表畫面上`);
+                    for (let p2 of nearbyPoints) {
+                        if (getDistance(pt.lat, pt.lon, p2.lat, p2.lon) < 50) { 
+                            isSafe = false; 
+                            break; 
+                        }
+                    }
+                    
+                    if (isSafe) break;
+                    testDist -= 1; // 碰到禁區就往圓心退縮 1 公尺
+                }
+
+                if (isSafe) {
+                    let node = { id: nodeId++, lat: pt.lat, lon: pt.lon, circleIdx: i };
+                    allSafeNodes.push(node);
+                    circleNodes[i].push(node);
                 }
             }
-        });
-    });
+        }
 
-    if (hasCurrentCategoryData) {
-        let paddedBounds = bounds.pad(0.1); 
-        overviewMap.fitBounds(paddedBounds);
-        overviewMap.setMaxBounds(paddedBounds); 
-        overviewMap.setMinZoom(overviewMap.getBoundsZoom(paddedBounds));
+        let adj = Array(allSafeNodes.length).fill(null).map(() => []);
+
+        for (let c1 = 0; c1 < n; c1++) {
+            if (c1 % 50 === 0) await yieldToMain();
+            
+            for (let i = 0; i < circleNodes[c1].length; i++) {
+                let u = circleNodes[c1][i];
+                
+                for (let c2 = c1; c2 <= Math.min(n - 1, c1 + 8); c2++) {
+                    for (let j = 0; j < circleNodes[c2].length; j++) {
+                        let v = circleNodes[c2][j];
+                        if (c1 === c2 && u.id >= v.id) continue; 
+                        
+                        let minLat = Math.min(u.lat, v.lat) - 0.0007;
+                        let maxLat = Math.max(u.lat, v.lat) + 0.0007;
+                        let minLon = Math.min(u.lon, v.lon) - 0.0007;
+                        let maxLon = Math.max(u.lon, v.lon) + 0.0007;
+                        
+                        let isSafePath = true;
+                        
+                        let collisionCandidates = originalGrid.getPointsInBounds(minLat, maxLat, minLon, maxLon);
+
+                        for (let p of collisionCandidates) {
+                            if (getSegmentDistance(u.lat, u.lon, v.lat, v.lon, p.lat, p.lon) < 50) { 
+                                isSafePath = false; break; 
+                            }
+                        }
+                        
+                        if (isSafePath) {
+                            let d = getDistance(u.lat, u.lon, v.lat, v.lon);
+                            adj[u.id].push({ to: v.id, weight: d });
+                            adj[v.id].push({ to: u.id, weight: d });
+                        }
+                    }
+                }
+            }
+        }
+
+        let globalPath = [];
+        let startCircleIdx = circleNodes.findIndex(c => c.length > 0);
+        if (startCircleIdx === -1) return; 
         
-        // 若一開始畫面就已經夠大，手動觸發顯示文字
-        if (overviewMap.getZoom() >= 16) document.body.classList.add('show-map-labels');
+        let currId = circleNodes[startCircleIdx][0].id;
+        globalPath.push(allSafeNodes[currId]);
+        
+        for (let targetLayer = startCircleIdx + 1; targetLayer < n; targetLayer++) {
+            if (targetLayer % 20 === 0) await yieldToMain();
+            if (circleNodes[targetLayer].length === 0) continue;
+            
+            let dist = Array(allSafeNodes.length).fill(Infinity);
+            let prev = Array(allSafeNodes.length).fill(-1);
+            dist[currId] = 0;
+            
+            let pq = new MinHeap(); 
+            pq.push({ id: currId, d: 0 });
+            
+            let foundTargetId = -1;
+            
+            while (!pq.isEmpty()) {
+                let curr = pq.pop();
+                
+                if (allSafeNodes[curr.id].circleIdx === targetLayer) {
+                    foundTargetId = curr.id;
+                    break;
+                }
+                
+                if (curr.d > dist[curr.id]) continue;
+                
+                for (let edge of adj[curr.id]) {
+                    let vNode = allSafeNodes[edge.to];
+                    if (vNode.circleIdx < allSafeNodes[currId].circleIdx - 3) continue;
+                    if (vNode.circleIdx > targetLayer + 4) continue;
+                    
+                    let newDist = curr.d + edge.weight;
+                    if (newDist < dist[edge.to]) {
+                        dist[edge.to] = newDist;
+                        prev[edge.to] = curr.id;
+                        pq.push({ id: edge.to, d: newDist });
+                    }
+                }
+            }
+            
+            if (foundTargetId !== -1) {
+                let path = [];
+                let step = foundTargetId;
+                while (step !== currId) {
+                    path.push(allSafeNodes[step]);
+                    step = prev[step];
+                }
+                path.reverse();
+                for(let node of path) globalPath.push(node);
+                currId = foundTargetId; 
+            }
+        }
+        
+        generatedPoints = globalPath;
     }
-};
+
+    function calculateTotalDistance(points) {
+        let total = 0;
+        for (let i = 0; i < points.length - 1; i++) total += getDistance(points[i].lat, points[i].lon, points[i+1].lat, points[i+1].lon);
+        return total;
+    }
+
+    async function processData() {
+        const mainBtn = document.getElementById('generateMainBtn');
+        mainBtn.innerHTML = '<span class="material-symbols-rounded">sync</span> 讀取與解析資料中...';
+        mainBtn.disabled = true;
+
+        try {
+            const fileInput = document.getElementById('fileInput');
+            const coordInput = document.getElementById('coordInput').value.trim();
+
+            if (fileInput.files.length > 0) {
+                try {
+                    const text = await fileInput.files[0].text(); 
+                    parseData(text, true);
+                } catch(e) { throw new Error("檔案讀取發生異常。"); }
+            } else if (coordInput !== "") {
+                parseData(coordInput, false);
+            } else { 
+                throw new Error("來源空缺，請匯入 GPX 或輸入座標參數。"); 
+            }
+            
+            if (originalPoints.length === 0) throw new Error("資料解析失敗，未檢測到有效空間座標。");
+            
+            await yieldToMain();
+
+            mainBtn.innerHTML = '<span class="material-symbols-rounded">memory</span> 極速運算空間網格 (尋找最平滑弧度)...';
+            await generateSmartPointsAsync(); 
+            
+            if (document.getElementById('densifyCheck').checked) {
+                mainBtn.innerHTML = '<span class="material-symbols-rounded">directions_walk</span> 加入模擬步行碎步中...';
+                await yieldToMain();
+                
+                let minS = parseFloat(document.getElementById('minStep').value);
+                let maxS = parseFloat(document.getElementById('maxStep').value);
+                if (isNaN(minS) || minS < 1) minS = 5;
+                if (isNaN(maxS) || maxS < minS) maxS = Math.max(10, minS);
+                generatedPoints = await densifyRouteAsync(generatedPoints, minS, maxS);
+            }
+
+            mainBtn.innerHTML = '<span class="material-symbols-rounded">map</span> 繪製預覽地圖中...';
+            await yieldToMain();
+
+            try {
+                if(originalLayerGroup) originalLayerGroup.clearLayers();
+                if(generatedLayerGroup) generatedLayerGroup.clearLayers();
+                drawMap();
+            } catch (e) { console.warn("地圖繪製異常", e); }
+            
+            let totalDistMeters = calculateTotalDistance(generatedPoints);
+            let speedVal = parseFloat(document.getElementById('speedInput').value) || 15;
+            let speedUnit = document.getElementById('speedUnit').value;
+
+            let speedMs = 1;
+            if (speedUnit === 'kmh') speedMs = speedVal * (1000 / 3600);
+            else if (speedUnit === 'ms') speedMs = speedVal;
+            else if (speedUnit === 'mmin') speedMs = speedVal / 60;
+
+            let timeSeconds = totalDistMeters / speedMs;
+
+            let distText = totalDistMeters >= 1000 ? (totalDistMeters / 1000).toFixed(2) + " 公里" : Math.round(totalDistMeters) + " 公尺";
+            
+            let timeText = "";
+            if (timeSeconds < 60) timeText = Math.round(timeSeconds) + " 秒";
+            else if (timeSeconds < 3600) timeText = `${Math.floor(timeSeconds / 60)} 分 ${Math.round(timeSeconds % 60)} 秒`;
+            else timeText = `${Math.floor(timeSeconds / 3600)} 小時 ${Math.floor((timeSeconds % 3600) / 60)} 分鐘`;
+
+            document.getElementById('displayDistance').innerText = distText;
+            document.getElementById('displayTime').innerText = timeText;
+            
+            document.getElementById('resultCard').style.display = 'block';
+            
+            setTimeout(() => {
+                document.getElementById('resultCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }, 100);
+
+        } catch(error) {
+            alert("系統錯誤：" + error.message);
+        } finally {
+            mainBtn.innerHTML = '<span class="material-symbols-rounded">rocket_launch</span> 立即生成極速安全路線';
+            mainBtn.disabled = false;
+        }
+    }
+
+    function drawMap() {
+        if (!originalLayerGroup || !generatedLayerGroup) return;
+        originalPoints.forEach(pt => {
+            // 50公尺危險禁區圓 (藍色實心)
+            L.circle([pt.lat, pt.lon], { color: '#4A90E2', fillColor: '#4A90E2', fillOpacity: 0.1, weight: 1, radius: 50 }).addTo(originalLayerGroup);
+            // 40公尺提示圓 (橘黃色虛線，不填滿以利辨識)
+            L.circle([pt.lat, pt.lon], { color: '#F39C12', weight: 1.5, dashArray: '5, 5', fill: false, radius: 40 }).addTo(originalLayerGroup);
+            
+            L.circleMarker([pt.lat, pt.lon], { radius: 4, color: '#2980b9', fillColor: '#4A90E2', fillOpacity: 1 }).addTo(originalLayerGroup);
+        });
+        generatedPoints.forEach(pt => { L.circleMarker([pt.lat, pt.lon], { radius: 3, color: '#c0392b', fillColor: '#E74C3C', fillOpacity: 1 }).addTo(generatedLayerGroup); });
+        if (originalPoints.length > 1) L.polyline(originalPoints.map(p => [p.lat, p.lon]), { color: '#4A90E2', weight: 3, opacity: 0.7 }).addTo(originalLayerGroup);
+        if (generatedPoints.length > 1) L.polyline(generatedPoints.map(p => [p.lat, p.lon]), { color: '#E74C3C', weight: 3, opacity: 0.7 }).addTo(generatedLayerGroup);
+    }
+
+    function getGPXString(format, routeName) {
+        let baseName = routeName || "防小人路線";
+        let baseTime = new Date(); 
+        let gpxContent = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+        gpxContent += `<gpx version="1.1" creator="GPX Smart Island Generator" xmlns="http://www.topografix.com/GPX/1/1">\n`;
+        
+        // TRK 模式 (軌跡線)：適用於 JoyStick, AnyTo / iAnyGo
+        if (format === 'joysticks' || format === 'anyTo' || format === 'ianygo') {
+            gpxContent += `  <metadata>\n    <name>${baseName}</name>\n  </metadata>\n`;
+            gpxContent += `  <trk>\n    <name>${baseName} (${format})</name>\n    <trkseg>\n`;
+            
+            generatedPoints.forEach((pt, idx) => {
+                let timeStr = new Date(baseTime.getTime() + idx * 3000).toISOString();
+                gpxContent += `      <trkpt lat="${pt.lat.toFixed(7)}" lon="${pt.lon.toFixed(7)}">\n`;
+                gpxContent += `        <time>${timeStr}</time>\n`;
+                gpxContent += `      </trkpt>\n`;
+            });
+            
+            gpxContent += `    </trkseg>\n  </trk>\n`;
+        } 
+        // WPT 模式 (獨立航點)：適用於 ARflash(Flashman), 魅影(iTools), FakeGPS
+        else {
+            gpxContent += `  <metadata>\n    <name>${baseName} (${format})</name>\n  </metadata>\n`;
+            
+            generatedPoints.forEach((pt, idx) => {
+                gpxContent += `  <wpt lat="${pt.lat.toFixed(7)}" lon="${pt.lon.toFixed(7)}">\n`;
+                gpxContent += `    <name>P${idx + 1}</name>\n`;
+                gpxContent += `  </wpt>\n`;
+            });
+        }
+        
+        gpxContent += `</gpx>`;
+        return gpxContent;
+    }
+
+    function exportGPX(format) {
+        if (generatedPoints.length === 0) return alert("請先生成路線！");
+        let baseName = document.getElementById('customFileName').value.trim() || "防小人路線";
+        let gpxText = getGPXString(format, baseName);
+        let blob = new Blob([gpxText], { type: 'application/gpx+xml' });
+        let url = URL.createObjectURL(blob);
+        let a = document.createElement('a');
+        let uniqueStamp = new Date().getTime();
+        a.href = url;
+        a.download = `${baseName}_${format}_${uniqueStamp}.gpx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function exportLocalGPX() {
+        if (generatedPoints.length === 0) return alert("請先生成路線！");
+        let selectedFormat = document.getElementById('localExportFormat').value;
+        exportGPX(selectedFormat);
+    }
+
+    async function generateShareLink() {
+        if (generatedPoints.length === 0) return alert("請先生成路線！");
+        const myGofileToken = document.getElementById('userGofileToken').value.trim();
+        if (!myGofileToken) return alert("請先完成第 3 步驟，填寫您的 Gofile API Token！");
+
+        localStorage.setItem("user_gofile_api_token", myGofileToken);
+        const shareBtn = document.getElementById('generateLinkBtn');
+        shareBtn.disabled = true;
+
+        const shareContainer = document.getElementById('shareLinkContainer');
+        const urlInput = document.getElementById('shareUrlInput');
+        const hintDiv = document.getElementById('shareHint');
+        
+        shareContainer.style.display = 'block';
+        urlInput.value = "[系統] 正在連接雲端伺服器...";
+
+        let baseName = document.getElementById('customFileName').value.trim() || "防小人路線";
+        let uniqueStamp = new Date().getTime();
+
+        const formats = [
+            { id: 'joysticks', name: 'JoyStick (TRK)', suffix: '_JoyStick' },
+            { id: 'anyTo', name: 'AnyTo / iAnyGo (TRK)', suffix: '_AnyTo' },
+            { id: 'iTools', name: '魅影版 / iTools (WPT)', suffix: '_iTools' },
+            { id: 'flashman', name: 'ARflash / Flashman (WPT)', suffix: '_Flashman' },
+            { id: 'fakegps', name: 'Fake GPS (WPT)', suffix: '_FakeGPS' }
+        ];
+
+        try {
+            const serverRes = await fetch('https://api.gofile.io/servers', { method: 'GET' });
+            if (!serverRes.ok) throw new Error(`無法取得伺服器節點 (HTTP ${serverRes.status})`);
+            const serverData = await serverRes.json();
+            if (serverData.status !== 'ok' || !serverData.data || !serverData.data.servers.length) {
+                throw new Error('雲端伺服器連線失敗');
+            }
+            
+            const uploadServer = serverData.data.servers[0].name;
+            let fileLinksList = "";
+
+            for (let i = 0; i < formats.length; i++) {
+                let fmt = formats[i];
+                shareBtn.innerHTML = `<span class="material-symbols-rounded">cloud_upload</span> 正在上傳 (${i+1}/${formats.length})...`;
+                urlInput.value = `[系統] 正在打包上傳第 ${i+1} 份檔案 (${fmt.name})...`;
+
+                const gpxData = getGPXString(fmt.id, baseName);
+                const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
+                const formData = new FormData();
+                const fileName = `${baseName}${fmt.suffix}_${uniqueStamp}.gpx`;
+                
+                formData.append('file', blob, fileName);
+                
+                // 確保 Token 確實附加到表單中
+                if (myGofileToken) {
+                    formData.append('token', myGofileToken); 
+                }
+
+                // 核心修改：將上傳端點改為穩定版的 /uploadFile
+                const uploadRes = await fetch(`https://${uploadServer}.gofile.io/uploadFile`, { 
+                    method: 'POST', 
+                    body: formData 
+                });
+                
+                // 若伺服器回傳非 200 狀態碼，拋出包含狀態碼的詳細錯誤以便排錯
+                if (!uploadRes.ok) {
+                    throw new Error(`上傳被拒絕 (HTTP 狀態碼: ${uploadRes.status})。請確認 API Token 是否正確。`);
+                }
+                
+                const uploadData = await uploadRes.json();
+                if (uploadData.status !== 'ok') {
+                    throw new Error(`檔案上傳失敗 (${uploadData.status})`);
+                }
+                
+                fileLinksList += `📌 ${fmt.name} 格式：\n${uploadData.data.downloadPage}\n\n`;
+                // 加入短暫延遲，避免連續發送請求被伺服器限流 (Rate Limit)
+                await new Promise(resolve => setTimeout(resolve, 800)); 
+            }
+            
+            let finalOutputText = `【${baseName}】安全路線檔案已成功打包！\n點擊下方專屬網址即可直接下載對應格式：\n\n${fileLinksList}（提示：檔案已安全同步儲存於上傳者的 Gofile 個人雲端帳號中）`;
+            urlInput.value = finalOutputText;
+            hintDiv.innerText = `🎉 成功！5 個檔案已直接儲存在您個人的 Gofile 根目錄中。`;
+            
+        } catch (error) {
+            urlInput.value = `[錯誤]：${error.message}`;
+            hintDiv.innerText = "💡 建議：若錯誤為 HTTP 401，請回到第 3 步驟重新複製並貼上完整的 Token；若持續出現伺服器異常，請暫時改用「存入本機」。";
+        } finally {
+            shareBtn.disabled = false;
+            shareBtn.innerHTML = '<span class="material-symbols-rounded">share</span> 產生分享網址';
+        }
+    }
+
+    function copyShareLink() {
+        const input = document.getElementById("shareUrlInput");
+        input.select();
+        document.execCommand("copy");
+        alert("通知文字與下載連結已複製！");
+    }
+</script>
+</body>
+</html>
