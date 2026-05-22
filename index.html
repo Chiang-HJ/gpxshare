@@ -173,7 +173,9 @@
             transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 6px;
             margin-bottom: 12px; box-sizing: border-box; backdrop-filter: blur(4px);
         }
-        .btn:active { transform: scale(0.98); }
+        .btn:active:not(:disabled) { transform: scale(0.98); }
+        .btn:disabled { opacity: 0.7; cursor: not-allowed; }
+        
         .btn-primary { background: rgba(74, 144, 226, 0.85); box-shadow: 0 4px 15px rgba(74, 144, 226, 0.3); }
         .btn-success { background: rgba(46, 204, 113, 0.85); box-shadow: 0 4px 15px rgba(46, 204, 113, 0.3); }
         .btn-purple { background: rgba(155, 89, 182, 0.85); box-shadow: 0 4px 15px rgba(155, 89, 182, 0.3); }
@@ -187,6 +189,7 @@
             display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
             background-color: rgba(0, 0, 0, 0.75); z-index: 9999; flex-direction: column;
             align-items: center; justify-content: center; backdrop-filter: blur(8px);
+            opacity: 0; transition: opacity 0.3s ease;
         }
         .map-content { width: 92%; height: 85%; background: white; border-radius: 20px; position: relative; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.4); }
         #map { width: 100%; height: 100%; }
@@ -202,8 +205,8 @@
 
 <div class="container">
     <div class="app-header">
-        <h1><span class="material-symbols-rounded">location_on</span>智慧島嶼防小人路線</h1>
-        <p>一鍵轉換安全格式，自動隱藏真實座標</p>
+        <h1><span class="material-symbols-rounded">location_on</span>極速智慧繞道產生器</h1>
+        <p>安全平滑繞行邊緣弧度，高效閃避 50m 危險禁區</p>
     </div>
 
     <div class="card">
@@ -228,16 +231,6 @@
 
     <div class="card">
         <h3 class="card-title"><span class="material-symbols-rounded">settings</span> 2. 轉換設定</h3>
-
-        <div style="margin-bottom: 18px;">
-            <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center;">
-                <span class="material-symbols-rounded">route</span> 路線生成模式
-            </label>
-            <select id="generationMode" class="input-box" style="cursor: pointer; font-weight: 500;">
-                <option value="astar">最短路徑模式</option>
-                <option value="envelope">傳統包絡線模式</option>
-            </select>
-        </div>
 
         <div style="margin-bottom: 18px;">
             <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center;">
@@ -288,10 +281,10 @@
             分享功能需要使用您個人的 Gofile 空間，請依照以下步驟操作：
         </p>
         <ol class="tutorial-list">
-            <li>前往 <a href="https://gofile.io/" target="_blank">Gofile 官網 (點此開啟)</a> 免費註冊並登入。</li>
-            <li>點擊網頁左上角的 <b>「Add Acount」</b> 進行註冊。</li>
-            <li>註冊成功後點選左上角帳戶名選擇 <b>「My Profile」</b> 。</li>
-            <li>上滑畫面，並複製畫面中的 <b>「API token」</b> 貼到下方欄位（系統會自動幫您記住）。</li>
+            <li>前往 <a href="https://gofile.io/" target="_blank">Gofile 官網</a> 免費註冊並登入。</li>
+            <li>點擊左上角的 <b>「Add Acount」</b> 進行註冊。</li>
+            <li>選擇 <b>「My Profile」</b> 。</li>
+            <li>複製畫面中的 <b>「API token」</b> 貼到下方欄位。</li>
         </ol>
 
         <div>
@@ -303,7 +296,7 @@
     </div>
 
     <button class="btn btn-primary" onclick="processData()" id="generateMainBtn" style="padding: 18px; font-size: 1.15rem;">
-        <span class="material-symbols-rounded">rocket_launch</span> 立即生成路線
+        <span class="material-symbols-rounded">rocket_launch</span> 立即生成極速安全路線
     </button>
 
     <div class="card" id="resultCard" style="display: none; border: 2px solid rgba(46, 204, 113, 0.6);">
@@ -322,10 +315,23 @@
             </div>
         </div>
 
-        <button class="btn btn-warning" onclick="openMap()"><span class="material-symbols-rounded">map</span> 預覽繞路地圖</button>
+        <button class="btn btn-warning" onclick="openMap()" style="margin-bottom: 15px;"><span class="material-symbols-rounded">map</span> 預覽繞路地圖</button>
         
+        <div style="margin-bottom: 12px;">
+            <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center; color: var(--dark);">
+                <span class="material-symbols-rounded">format_list_bulleted</span> 選擇本機匯出格式
+            </label>
+            <select id="localExportFormat" class="input-box" style="margin-bottom: 5px;">
+                <option value="joysticks">JoyStick (TRK 軌跡)</option>
+                <option value="anyTo">AnyTo / iAnyGo (TRK 軌跡)</option>
+                <option value="iTools">魅影版 / iTools (WPT 航點)</option>
+                <option value="flashman">ARflash / Flashman (WPT 航點)</option>
+                <option value="fakegps">Fake GPS (WPT 航點)</option>
+            </select>
+        </div>
+
         <div class="action-row">
-            <button class="btn btn-success" onclick="exportGPX('joysticks')"><span class="material-symbols-rounded">save_alt</span> 存入本機</button>
+            <button class="btn btn-success" onclick="exportLocalGPX()"><span class="material-symbols-rounded">save_alt</span> 存入本機</button>
             <button class="btn btn-purple" id="generateLinkBtn" onclick="generateShareLink()"><span class="material-symbols-rounded">share</span> 產生分享網址</button>
         </div>
 
@@ -349,15 +355,79 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-    // --- 網頁載入時：自動幫使用者讀取先前記住的 Token ---
+    const yieldToMain = () => new Promise(resolve => setTimeout(resolve, 0));
+
+    class MinHeap {
+        constructor() { this.heap = []; }
+        push(node) {
+            this.heap.push(node);
+            this.bubbleUp(this.heap.length - 1);
+        }
+        pop() {
+            if (this.heap.length === 1) return this.heap.pop();
+            const top = this.heap[0];
+            this.heap[0] = this.heap.pop();
+            this.sinkDown(0);
+            return top;
+        }
+        isEmpty() { return this.heap.length === 0; }
+        bubbleUp(idx) {
+            while (idx > 0) {
+                let parentIdx = Math.floor((idx - 1) / 2);
+                if (this.heap[idx].d >= this.heap[parentIdx].d) break;
+                [this.heap[idx], this.heap[parentIdx]] = [this.heap[parentIdx], this.heap[idx]];
+                idx = parentIdx;
+            }
+        }
+        sinkDown(idx) {
+            let length = this.heap.length;
+            while (true) {
+                let leftIdx = 2 * idx + 1, rightIdx = 2 * idx + 2;
+                let swapIdx = null;
+                if (leftIdx < length && this.heap[leftIdx].d < this.heap[idx].d) swapIdx = leftIdx;
+                if (rightIdx < length && this.heap[rightIdx].d < (swapIdx === null ? this.heap[idx].d : this.heap[leftIdx].d)) swapIdx = rightIdx;
+                if (swapIdx === null) break;
+                [this.heap[idx], this.heap[swapIdx]] = [this.heap[swapIdx], this.heap[idx]];
+                idx = swapIdx;
+            }
+        }
+    }
+
+    class SpatialGrid {
+        constructor(cellSize = 0.001) { 
+            this.cellSize = cellSize;
+            this.cells = new Map();
+        }
+        _key(lat, lon) { return `${Math.floor(lat / this.cellSize)},${Math.floor(lon / this.cellSize)}`; }
+        insert(pt, index) {
+            const k = this._key(pt.lat, pt.lon);
+            if (!this.cells.has(k)) this.cells.set(k, []);
+            this.cells.get(k).push({ pt, index });
+        }
+        getPointsInBounds(minLat, maxLat, minLon, maxLon) {
+            const points = [];
+            const startX = Math.floor(minLat / this.cellSize);
+            const endX = Math.floor(maxLat / this.cellSize);
+            const startY = Math.floor(minLon / this.cellSize);
+            const endY = Math.floor(maxLon / this.cellSize);
+            
+            for (let x = startX; x <= endX; x++) {
+                for (let y = startY; y <= endY; y++) {
+                    const k = `${x},${y}`;
+                    if (this.cells.has(k)) {
+                        for (let item of this.cells.get(k)) points.push(item.pt);
+                    }
+                }
+            }
+            return points;
+        }
+    }
+
     document.addEventListener("DOMContentLoaded", () => {
         const savedToken = localStorage.getItem("user_gofile_api_token");
-        if (savedToken) {
-            document.getElementById("userGofileToken").value = savedToken;
-        }
+        if (savedToken) document.getElementById("userGofileToken").value = savedToken;
     });
 
-    // --- UI 互動邏輯 ---
     function updateFileName() {
         const fileInput = document.getElementById('fileInput');
         const display = document.getElementById('fileNameDisplay');
@@ -379,12 +449,10 @@
         document.getElementById('fileNameDisplay').style.display = "none";
         document.getElementById('coordInput').value = "";
         document.getElementById('customFileName').value = "";
-        
         document.getElementById('resultCard').style.display = 'none';
         document.getElementById('shareLinkContainer').style.display = 'none';
         
-        originalPoints = [];
-        generatedPoints = [];
+        originalPoints = []; generatedPoints = [];
         if(originalLayerGroup) originalLayerGroup.clearLayers();
         if(generatedLayerGroup) generatedLayerGroup.clearLayers();
     }
@@ -399,20 +467,28 @@
 
     let originalPoints = [];
     let generatedPoints = [];
+    let originalGrid = new SpatialGrid();
 
     function openMap() {
-        document.getElementById('mapModal').style.display = 'flex';
+        const modal = document.getElementById('mapModal');
+        modal.style.display = 'flex';
         setTimeout(() => {
+            modal.style.opacity = '1';
             if(map) {
                 map.invalidateSize();
                 const origLatLngs = originalPoints.map(p => [p.lat, p.lon]);
                 const genLatLngs = generatedPoints.map(p => [p.lat, p.lon]);
-                if (origLatLngs.length > 0) map.fitBounds(L.latLngBounds(origLatLngs.concat(genLatLngs)), { padding: [30, 30] });
+                const allPoints = origLatLngs.concat(genLatLngs);
+                if (allPoints.length > 0) map.fitBounds(L.latLngBounds(allPoints), { padding: [30, 30] });
             }
-        }, 100); 
+        }, 50); 
     }
 
-    function closeMap() { document.getElementById('mapModal').style.display = 'none'; }
+    function closeMap() {
+        const modal = document.getElementById('mapModal');
+        modal.style.opacity = '0';
+        setTimeout(() => { modal.style.display = 'none'; }, 300);
+    }
 
     function getBearing(lat1, lon1, lat2, lon2) {
         const lat1_rad = lat1 * Math.PI / 180, lat2_rad = lat2 * Math.PI / 180, diff_lon = (lon2 - lon1) * Math.PI / 180;
@@ -443,33 +519,44 @@
         return Math.hypot(dxC - t * dxB, dyC - t * dyB);
     }
 
-    function parseGPX(xmlText) {
-        const xmlDoc = new DOMParser().parseFromString(xmlText, "text/xml");
-        for (let type of ['trkpt', 'rtept', 'wpt']) {
-            const nodes = xmlDoc.getElementsByTagName(type);
-            if (nodes.length > 0) {
-                for (let i = 0; i < nodes.length; i++) {
-                    const lat = parseFloat(nodes[i].getAttribute('lat')), lon = parseFloat(nodes[i].getAttribute('lon'));
-                    if (!isNaN(lat) && !isNaN(lon)) originalPoints.push({ lat, lon });
-                } break;
+    function parseData(text, isGPX) {
+        originalPoints = [];
+        originalGrid = new SpatialGrid();
+        if (isGPX) {
+            const xmlDoc = new DOMParser().parseFromString(text, "text/xml");
+            for (let type of ['trkpt', 'rtept', 'wpt']) {
+                const nodes = xmlDoc.getElementsByTagName(type);
+                if (nodes.length > 0) {
+                    for (let i = 0; i < nodes.length; i++) {
+                        const lat = parseFloat(nodes[i].getAttribute('lat')), lon = parseFloat(nodes[i].getAttribute('lon'));
+                        if (!isNaN(lat) && !isNaN(lon)) {
+                            let pt = { lat, lon };
+                            originalPoints.push(pt);
+                            originalGrid.insert(pt, originalPoints.length - 1);
+                        }
+                    } break;
+                }
             }
+        } else {
+            text.split('\n').forEach(line => {
+                const parts = line.split(/[,\s\t]+/).filter(Boolean);
+                if (parts.length >= 2) {
+                    const lat = parseFloat(parts[0]), lon = parseFloat(parts[1]);
+                    if (!isNaN(lat) && !isNaN(lon)) {
+                        let pt = { lat, lon };
+                        originalPoints.push(pt);
+                        originalGrid.insert(pt, originalPoints.length - 1);
+                    }
+                }
+            });
         }
     }
 
-    function parseTextCoords(text) {
-        text.split('\n').forEach(line => {
-            const parts = line.split(/[,\s\t]+/).filter(Boolean);
-            if (parts.length >= 2) {
-                const lat = parseFloat(parts[0]), lon = parseFloat(parts[1]);
-                if (!isNaN(lat) && !isNaN(lon)) originalPoints.push({ lat, lon });
-            }
-        });
-    }
-
-    function densifyRoute(points, minStep, maxStep) {
+    async function densifyRouteAsync(points, minStep, maxStep) {
         if (points.length < 2) return points;
         const densePoints = [points[0]];
         for (let i = 0; i < points.length - 1; i++) {
+            if (i % 200 === 0) await yieldToMain();
             const p1 = points[i], p2 = points[i + 1];
             const totalDist = getDistance(p1.lat, p1.lon, p2.lat, p2.lon);
             if (totalDist > maxStep) {
@@ -479,185 +566,201 @@
                     densePoints.push(getDestination(p1.lat, p1.lon, currentDist, bearing));
                     currentDist += Math.random() * (maxStep - minStep) + minStep;
                 }
-            } densePoints.push(p2);
-        } return densePoints;
+            } 
+            densePoints.push(p2);
+        } 
+        return densePoints;
     }
 
-    function generateSmartPoints() {
-        const mode = document.getElementById('generationMode').value;
-        if (mode === 'astar') {
-            generateAStarPoints();
-        } else {
-            generateEnvelopePoints();
-        }
-    }
-
-    function generateAStarPoints() {
-        generatedPoints = []; const n = originalPoints.length; if (n === 0) return;
+    async function generateSmartPointsAsync() {
+        generatedPoints = []; 
+        const n = originalPoints.length; 
+        if (n === 0) return;
+        
         let allSafeNodes = [];
         let circleNodes = Array(n).fill(null).map(() => []);
         let nodeId = 0;
+
         for (let i = 0; i < n; i++) {
+            if (i % 100 === 0) await yieldToMain(); 
             let center = originalPoints[i];
-            for (let a = 0; a < 360; a += 22.5) { 
-                let pt = getDestination(center.lat, center.lon, 45, a);
-                let isSafe = true;
-                for (let k = 0; k < n; k++) {
-                    if (k === i) continue;
-                    if (getDistance(pt.lat, pt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { isSafe = false; break; }
+            
+            for (let a = 0; a < 360; a += 15) { 
+                // 距離圓心 60~70 公尺中隨機偏移
+                let testDist = 60 + Math.random() * 10;
+                let pt, isSafe;
+                
+                // 只要距離大於 50，就一直測試並向圓心退縮（-1m）
+                while (testDist > 50) {
+                    pt = getDestination(center.lat, center.lon, testDist, a);
+                    isSafe = true;
+                    
+                    // 擴大搜索範圍以涵蓋 70m 的極端值
+                    let nearbyPoints = originalGrid.getPointsInBounds(pt.lat - 0.001, pt.lat + 0.001, pt.lon - 0.001, pt.lon + 0.001);
+                    
+                    for (let p2 of nearbyPoints) {
+                        if (getDistance(pt.lat, pt.lon, p2.lat, p2.lon) < 50) { 
+                            isSafe = false; 
+                            break; 
+                        }
+                    }
+                    
+                    if (isSafe) break;
+                    testDist -= 1; // 碰到禁區就往圓心退縮 1 公尺
                 }
+
                 if (isSafe) {
-                    let node = { id: nodeId++, lat: pt.lat, lon: pt.lon, circleIdx: i, angle: a };
+                    let node = { id: nodeId++, lat: pt.lat, lon: pt.lon, circleIdx: i };
                     allSafeNodes.push(node);
                     circleNodes[i].push(node);
                 }
             }
         }
-        let adj = Array(allSafeNodes.length).fill(null).map(() => []);
-        for (let i = 0; i < allSafeNodes.length; i++) {
-            for (let j = i + 1; j < allSafeNodes.length; j++) {
-                let n1 = allSafeNodes[i], n2 = allSafeNodes[j], isSafePath = true;
-                for (let k = 0; k < n; k++) {
-                    if (getSegmentDistance(n1.lat, n1.lon, n2.lat, n2.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { isSafePath = false; break; }
-                }
-                if (isSafePath) {
-                    let d = getDistance(n1.lat, n1.lon, n2.lat, n2.lon);
-                    adj[i].push({ to: j, weight: d }); adj[j].push({ to: i, weight: d });
-                }
-            }
-        }
-        function findShortestPath(startNodeId, targetCircleIdx) {
-            let dist = Array(allSafeNodes.length).fill(Infinity), prev = Array(allSafeNodes.length).fill(-1);
-            dist[startNodeId] = 0;
-            let pq = [{ id: startNodeId, d: 0 }];
-            while (pq.length > 0) {
-                pq.sort((a, b) => a.d - b.d);
-                let curr = pq.shift();
-                if (allSafeNodes[curr.id].circleIdx === targetCircleIdx) {
-                    let path = [];
-                    for(let at = curr.id; at !== -1; at = prev[at]) path.unshift(allSafeNodes[at]);
-                    return { path, endNodeId: curr.id };
-                }
-                for (let edge of adj[curr.id]) {
-                    if (curr.d + edge.weight < dist[edge.to]) {
-                        dist[edge.to] = curr.d + edge.weight; prev[edge.to] = curr.id;
-                        pq.push({ id: edge.to, d: dist[edge.to] });
-                    }
-                }
-            }
-            return null;
-        }
-        let currentStartNode = -1;
-        if (circleNodes[0].length > 0) {
-            currentStartNode = circleNodes[0][0].id;
-            generatedPoints.push(allSafeNodes[currentStartNode]);
-        }
-        for (let targetIdx = 1; targetIdx < n; targetIdx++) {
-            if (circleNodes[targetIdx].length === 0) continue; 
-            if (currentStartNode === -1) {
-                currentStartNode = circleNodes[targetIdx][0].id;
-                generatedPoints.push(allSafeNodes[currentStartNode]);
-                continue;
-            }
-            let result = findShortestPath(currentStartNode, targetIdx);
-            if (result) {
-                for (let i = 1; i < result.path.length; i++) generatedPoints.push(result.path[i]);
-                currentStartNode = result.endNodeId;
-            } else {
-                let backupEnd = circleNodes[targetIdx][0];
-                generatedPoints.push(backupEnd);
-                currentStartNode = backupEnd.id;
-            }
-        }
-    }
 
-    function generateEnvelopePoints() {
-        generatedPoints = []; const n = originalPoints.length; if (n === 0) return;
-        const clusters = [], visited = new Set(), pointCentroids = new Array(n);
-        for (let i = 0; i < n; i++) {
-            if (visited.has(i)) continue;
-            const cluster = [], queue = [i]; visited.add(i);
-            while (queue.length > 0) {
-                const curr = queue.shift(); cluster.push(curr);
-                for (let j = 0; j < n; j++) {
-                    if (!visited.has(j) && getDistance(originalPoints[curr].lat, originalPoints[curr].lon, originalPoints[j].lat, originalPoints[j].lon) <= 90) {
-                        visited.add(j); queue.push(j);
+        let adj = Array(allSafeNodes.length).fill(null).map(() => []);
+
+        for (let c1 = 0; c1 < n; c1++) {
+            if (c1 % 50 === 0) await yieldToMain();
+            
+            for (let i = 0; i < circleNodes[c1].length; i++) {
+                let u = circleNodes[c1][i];
+                
+                for (let c2 = c1; c2 <= Math.min(n - 1, c1 + 8); c2++) {
+                    for (let j = 0; j < circleNodes[c2].length; j++) {
+                        let v = circleNodes[c2][j];
+                        if (c1 === c2 && u.id >= v.id) continue; 
+                        
+                        let minLat = Math.min(u.lat, v.lat) - 0.0007;
+                        let maxLat = Math.max(u.lat, v.lat) + 0.0007;
+                        let minLon = Math.min(u.lon, v.lon) - 0.0007;
+                        let maxLon = Math.max(u.lon, v.lon) + 0.0007;
+                        
+                        let isSafePath = true;
+                        
+                        let collisionCandidates = originalGrid.getPointsInBounds(minLat, maxLat, minLon, maxLon);
+
+                        for (let p of collisionCandidates) {
+                            if (getSegmentDistance(u.lat, u.lon, v.lat, v.lon, p.lat, p.lon) < 50) { 
+                                isSafePath = false; break; 
+                            }
+                        }
+                        
+                        if (isSafePath) {
+                            let d = getDistance(u.lat, u.lon, v.lat, v.lon);
+                            adj[u.id].push({ to: v.id, weight: d });
+                            adj[v.id].push({ to: u.id, weight: d });
+                        }
                     }
                 }
-            } clusters.push(cluster);
+            }
         }
-        clusters.forEach(cluster => {
-            let sumLat = 0, sumLon = 0; cluster.forEach(idx => { sumLat += originalPoints[idx].lat; sumLon += originalPoints[idx].lon; });
-            const centroid = { lat: sumLat / cluster.length, lon: sumLon / cluster.length };
-            cluster.forEach(idx => pointCentroids[idx] = centroid);
-        });
+
+        let globalPath = [];
+        let startCircleIdx = circleNodes.findIndex(c => c.length > 0);
+        if (startCircleIdx === -1) return; 
         
-        for (let i = 0; i < n; i++) {
-            const center = originalPoints[i], centroid = pointCentroids[i];
-            const distToCentroid = getDistance(centroid.lat, centroid.lon, center.lat, center.lon);
-            const outwardAngle = distToCentroid < 1 ? 0 : getBearing(centroid.lat, centroid.lon, center.lat, center.lon);
-            let coastalPoints = [];
-            for (let a = 0; a < 360; a += 15) { 
-                if (distToCentroid >= 1) {
-                    let diff = Math.abs((a - outwardAngle + 360) % 360); if (diff > 180) diff = 360 - diff;
-                    if (diff > 90) continue; 
+        let currId = circleNodes[startCircleIdx][0].id;
+        globalPath.push(allSafeNodes[currId]);
+        
+        for (let targetLayer = startCircleIdx + 1; targetLayer < n; targetLayer++) {
+            if (targetLayer % 20 === 0) await yieldToMain();
+            if (circleNodes[targetLayer].length === 0) continue;
+            
+            let dist = Array(allSafeNodes.length).fill(Infinity);
+            let prev = Array(allSafeNodes.length).fill(-1);
+            dist[currId] = 0;
+            
+            let pq = new MinHeap(); 
+            pq.push({ id: currId, d: 0 });
+            
+            let foundTargetId = -1;
+            
+            while (!pq.isEmpty()) {
+                let curr = pq.pop();
+                
+                if (allSafeNodes[curr.id].circleIdx === targetLayer) {
+                    foundTargetId = curr.id;
+                    break;
                 }
-                const pt = getDestination(center.lat, center.lon, Math.random() * 5 + 45, a);
-                let isCoastal = true;
-                for (let k = 0; k < n; k++) {
-                    if (k === i) continue;
-                    if (getDistance(pt.lat, pt.lon, originalPoints[k].lat, originalPoints[k].lon) <= 40) { isCoastal = false; break; }
+                
+                if (curr.d > dist[curr.id]) continue;
+                
+                for (let edge of adj[curr.id]) {
+                    let vNode = allSafeNodes[edge.to];
+                    if (vNode.circleIdx < allSafeNodes[currId].circleIdx - 3) continue;
+                    if (vNode.circleIdx > targetLayer + 4) continue;
+                    
+                    let newDist = curr.d + edge.weight;
+                    if (newDist < dist[edge.to]) {
+                        dist[edge.to] = newDist;
+                        prev[edge.to] = curr.id;
+                        pq.push({ id: edge.to, d: newDist });
+                    }
                 }
-                if (isCoastal) coastalPoints.push(pt);
             }
-            if (coastalPoints.length > 0) {
-                generatedPoints.push(coastalPoints[Math.floor(coastalPoints.length / 2)]);
-            } else {
-                let fallbackPt = getDestination(center.lat, center.lon, 45, outwardAngle);
-                generatedPoints.push(fallbackPt);
+            
+            if (foundTargetId !== -1) {
+                let path = [];
+                let step = foundTargetId;
+                while (step !== currId) {
+                    path.push(allSafeNodes[step]);
+                    step = prev[step];
+                }
+                path.reverse();
+                for(let node of path) globalPath.push(node);
+                currId = foundTargetId; 
             }
         }
+        
+        generatedPoints = globalPath;
     }
 
     function calculateTotalDistance(points) {
         let total = 0;
-        for (let i = 0; i < points.length - 1; i++) {
-            total += getDistance(points[i].lat, points[i].lon, points[i+1].lat, points[i+1].lon);
-        }
+        for (let i = 0; i < points.length - 1; i++) total += getDistance(points[i].lat, points[i].lon, points[i+1].lat, points[i+1].lon);
         return total;
     }
 
     async function processData() {
         const mainBtn = document.getElementById('generateMainBtn');
-        mainBtn.innerHTML = '<span class="material-symbols-rounded">sync</span> 計算處理中...';
+        mainBtn.innerHTML = '<span class="material-symbols-rounded">sync</span> 讀取與解析資料中...';
         mainBtn.disabled = true;
 
         try {
-            originalPoints = []; generatedPoints = [];
             const fileInput = document.getElementById('fileInput');
             const coordInput = document.getElementById('coordInput').value.trim();
 
             if (fileInput.files.length > 0) {
                 try {
-                    const text = await fileInput.files[0].text(); parseGPX(text);
+                    const text = await fileInput.files[0].text(); 
+                    parseData(text, true);
                 } catch(e) { throw new Error("檔案讀取發生異常。"); }
             } else if (coordInput !== "") {
-                parseTextCoords(coordInput);
+                parseData(coordInput, false);
             } else { 
                 throw new Error("來源空缺，請匯入 GPX 或輸入座標參數。"); 
             }
-
+            
             if (originalPoints.length === 0) throw new Error("資料解析失敗，未檢測到有效空間座標。");
+            
+            await yieldToMain();
 
-            generateSmartPoints(); 
+            mainBtn.innerHTML = '<span class="material-symbols-rounded">memory</span> 極速運算空間網格 (尋找最平滑弧度)...';
+            await generateSmartPointsAsync(); 
             
             if (document.getElementById('densifyCheck').checked) {
+                mainBtn.innerHTML = '<span class="material-symbols-rounded">directions_walk</span> 加入模擬步行碎步中...';
+                await yieldToMain();
+                
                 let minS = parseFloat(document.getElementById('minStep').value);
                 let maxS = parseFloat(document.getElementById('maxStep').value);
                 if (isNaN(minS) || minS < 1) minS = 5;
                 if (isNaN(maxS) || maxS < minS) maxS = Math.max(10, minS);
-                generatedPoints = densifyRoute(generatedPoints, minS, maxS);
+                generatedPoints = await densifyRouteAsync(generatedPoints, minS, maxS);
             }
+
+            mainBtn.innerHTML = '<span class="material-symbols-rounded">map</span> 繪製預覽地圖中...';
+            await yieldToMain();
 
             try {
                 if(originalLayerGroup) originalLayerGroup.clearLayers();
@@ -679,17 +782,9 @@
             let distText = totalDistMeters >= 1000 ? (totalDistMeters / 1000).toFixed(2) + " 公里" : Math.round(totalDistMeters) + " 公尺";
             
             let timeText = "";
-            if (timeSeconds < 60) {
-                timeText = Math.round(timeSeconds) + " 秒";
-            } else if (timeSeconds < 3600) {
-                let mins = Math.floor(timeSeconds / 60);
-                let secs = Math.round(timeSeconds % 60);
-                timeText = `${mins} 分 ${secs} 秒`;
-            } else {
-                let hrs = Math.floor(timeSeconds / 3600);
-                let mins = Math.floor((timeSeconds % 3600) / 60);
-                timeText = `${hrs} 小時 ${mins} 分鐘`;
-            }
+            if (timeSeconds < 60) timeText = Math.round(timeSeconds) + " 秒";
+            else if (timeSeconds < 3600) timeText = `${Math.floor(timeSeconds / 60)} 分 ${Math.round(timeSeconds % 60)} 秒`;
+            else timeText = `${Math.floor(timeSeconds / 3600)} 小時 ${Math.floor((timeSeconds % 3600) / 60)} 分鐘`;
 
             document.getElementById('displayDistance').innerText = distText;
             document.getElementById('displayTime').innerText = timeText;
@@ -703,7 +798,7 @@
         } catch(error) {
             alert("系統錯誤：" + error.message);
         } finally {
-            mainBtn.innerHTML = '<span class="material-symbols-rounded">rocket_launch</span> 立即生成路線';
+            mainBtn.innerHTML = '<span class="material-symbols-rounded">rocket_launch</span> 立即生成極速安全路線';
             mainBtn.disabled = false;
         }
     }
@@ -711,12 +806,51 @@
     function drawMap() {
         if (!originalLayerGroup || !generatedLayerGroup) return;
         originalPoints.forEach(pt => {
-            L.circle([pt.lat, pt.lon], { color: '#4A90E2', fillColor: '#4A90E2', fillOpacity: 0.1, weight: 1, radius: 40 }).addTo(originalLayerGroup);
+            // 50公尺危險禁區圓 (藍色實心)
+            L.circle([pt.lat, pt.lon], { color: '#4A90E2', fillColor: '#4A90E2', fillOpacity: 0.1, weight: 1, radius: 50 }).addTo(originalLayerGroup);
+            // 40公尺提示圓 (橘黃色虛線，不填滿以利辨識)
+            L.circle([pt.lat, pt.lon], { color: '#F39C12', weight: 1.5, dashArray: '5, 5', fill: false, radius: 40 }).addTo(originalLayerGroup);
+            
             L.circleMarker([pt.lat, pt.lon], { radius: 4, color: '#2980b9', fillColor: '#4A90E2', fillOpacity: 1 }).addTo(originalLayerGroup);
         });
         generatedPoints.forEach(pt => { L.circleMarker([pt.lat, pt.lon], { radius: 3, color: '#c0392b', fillColor: '#E74C3C', fillOpacity: 1 }).addTo(generatedLayerGroup); });
         if (originalPoints.length > 1) L.polyline(originalPoints.map(p => [p.lat, p.lon]), { color: '#4A90E2', weight: 3, opacity: 0.7 }).addTo(originalLayerGroup);
         if (generatedPoints.length > 1) L.polyline(generatedPoints.map(p => [p.lat, p.lon]), { color: '#E74C3C', weight: 3, opacity: 0.7 }).addTo(generatedLayerGroup);
+    }
+
+    function getGPXString(format, routeName) {
+        let baseName = routeName || "防小人路線";
+        let baseTime = new Date(); 
+        let gpxContent = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+        gpxContent += `<gpx version="1.1" creator="GPX Smart Island Generator" xmlns="http://www.topografix.com/GPX/1/1">\n`;
+        
+        // TRK 模式 (軌跡線)：適用於 JoyStick, AnyTo / iAnyGo
+        if (format === 'joysticks' || format === 'anyTo' || format === 'ianygo') {
+            gpxContent += `  <metadata>\n    <name>${baseName}</name>\n  </metadata>\n`;
+            gpxContent += `  <trk>\n    <name>${baseName} (${format})</name>\n    <trkseg>\n`;
+            
+            generatedPoints.forEach((pt, idx) => {
+                let timeStr = new Date(baseTime.getTime() + idx * 3000).toISOString();
+                gpxContent += `      <trkpt lat="${pt.lat.toFixed(7)}" lon="${pt.lon.toFixed(7)}">\n`;
+                gpxContent += `        <time>${timeStr}</time>\n`;
+                gpxContent += `      </trkpt>\n`;
+            });
+            
+            gpxContent += `    </trkseg>\n  </trk>\n`;
+        } 
+        // WPT 模式 (獨立航點)：適用於 ARflash(Flashman), 魅影(iTools), FakeGPS
+        else {
+            gpxContent += `  <metadata>\n    <name>${baseName} (${format})</name>\n  </metadata>\n`;
+            
+            generatedPoints.forEach((pt, idx) => {
+                gpxContent += `  <wpt lat="${pt.lat.toFixed(7)}" lon="${pt.lon.toFixed(7)}">\n`;
+                gpxContent += `    <name>P${idx + 1}</name>\n`;
+                gpxContent += `  </wpt>\n`;
+            });
+        }
+        
+        gpxContent += `</gpx>`;
+        return gpxContent;
     }
 
     function exportGPX(format) {
@@ -735,113 +869,98 @@
         URL.revokeObjectURL(url);
     }
 
-    function getGPXString(format, routeName) {
-        let baseName = routeName || "防小人路線";
-        let baseTime = new Date(); 
-        let gpxContent = `<?xml version="1.0" encoding="UTF-8"?>\n`;
-        gpxContent += `<gpx version="1.1" creator="GPX Smart Island Generator" xmlns="http://www.topografix.com/GPX/1/1">\n`;
-        gpxContent += `  <metadata>\n    <name>${baseName}</name>\n  </metadata>\n`;
-        gpxContent += `  <trk>\n    <name>${baseName} (${format})</name>\n    <trkseg>\n`;
-        
-        generatedPoints.forEach((pt, idx) => {
-            let timeStr = new Date(baseTime.getTime() + idx * 3000).toISOString();
-            gpxContent += `      <trkpt lat="${pt.lat.toFixed(6)}" lon="${pt.lon.toFixed(6)}">\n`;
-            gpxContent += `        <time>${timeStr}</time>\n`;
-            gpxContent += `      </trkpt>\n`;
-        });
-        
-        gpxContent += `    </trkseg>\n  </trk>\n</gpx>`;
-        return gpxContent;
+    function exportLocalGPX() {
+        if (generatedPoints.length === 0) return alert("請先生成路線！");
+        let selectedFormat = document.getElementById('localExportFormat').value;
+        exportGPX(selectedFormat);
     }
 
-    // --- 核心上傳邏輯：移除資料夾建立，直接上傳至帳號根目錄 ---
     async function generateShareLink() {
         if (generatedPoints.length === 0) return alert("請先生成路線！");
-
-        // 讀取使用者填寫的 Token
         const myGofileToken = document.getElementById('userGofileToken').value.trim();
-        if (!myGofileToken) {
-            alert("請先完成第 3 步驟，填寫您的 Gofile API Token！\n（您可以點擊教學中的連結去免費註冊取得）");
-            return;
-        }
+        if (!myGofileToken) return alert("請先完成第 3 步驟，填寫您的 Gofile API Token！");
 
-        // 自動儲存到瀏覽器 localStorage
         localStorage.setItem("user_gofile_api_token", myGofileToken);
-
         const shareBtn = document.getElementById('generateLinkBtn');
         shareBtn.disabled = true;
-        shareBtn.innerHTML = '<span class="material-symbols-rounded">cloud_upload</span> 正在上傳至您的空間...';
-        shareBtn.style.opacity = "0.7";
 
         const shareContainer = document.getElementById('shareLinkContainer');
         const urlInput = document.getElementById('shareUrlInput');
         const hintDiv = document.getElementById('shareHint');
         
         shareContainer.style.display = 'block';
-        urlInput.value = "[系統] 正在呼叫 API，將四種模擬格式上傳至您的專屬雲端帳號根目錄...";
+        urlInput.value = "[系統] 正在連接雲端伺服器...";
 
         let baseName = document.getElementById('customFileName').value.trim() || "防小人路線";
         let uniqueStamp = new Date().getTime();
 
         const formats = [
-            { id: 'joysticks', name: 'joysticks', suffix: '_Joysticks' },
-            { id: 'anyTo', name: 'AnyTo', suffix: '_AnyTo' },
-            { id: 'iTools', name: '魅影版', suffix: '_iTools' },
-            { id: 'flashman', name: 'Flashman', suffix: '_Flashman' }
+            { id: 'joysticks', name: 'JoyStick (TRK)', suffix: '_JoyStick' },
+            { id: 'anyTo', name: 'AnyTo / iAnyGo (TRK)', suffix: '_AnyTo' },
+            { id: 'iTools', name: '魅影版 / iTools (WPT)', suffix: '_iTools' },
+            { id: 'flashman', name: 'ARflash / Flashman (WPT)', suffix: '_Flashman' },
+            { id: 'fakegps', name: 'Fake GPS (WPT)', suffix: '_FakeGPS' }
         ];
 
         try {
-            // --- 動作 1：取得最佳上傳伺服器節點 ---
             const serverRes = await fetch('https://api.gofile.io/servers', { method: 'GET' });
-            if (!serverRes.ok) throw new Error(`無法取得伺服器節點 (Status: ${serverRes.status})`);
-            
+            if (!serverRes.ok) throw new Error(`無法取得伺服器節點 (HTTP ${serverRes.status})`);
             const serverData = await serverRes.json();
             if (serverData.status !== 'ok' || !serverData.data || !serverData.data.servers.length) {
-                throw new Error('Gofile 雲端伺服器目前暫時無法連接');
+                throw new Error('雲端伺服器連線失敗');
             }
+            
             const uploadServer = serverData.data.servers[0].name;
-
             let fileLinksList = "";
 
-            // --- 動作 2：逐一打包上傳四種格式至根目錄 ---
-            for (let fmt of formats) {
+            for (let i = 0; i < formats.length; i++) {
+                let fmt = formats[i];
+                shareBtn.innerHTML = `<span class="material-symbols-rounded">cloud_upload</span> 正在上傳 (${i+1}/${formats.length})...`;
+                urlInput.value = `[系統] 正在打包上傳第 ${i+1} 份檔案 (${fmt.name})...`;
+
                 const gpxData = getGPXString(fmt.id, baseName);
                 const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
-                
                 const formData = new FormData();
                 const fileName = `${baseName}${fmt.suffix}_${uniqueStamp}.gpx`;
+                
                 formData.append('file', blob, fileName);
-                formData.append('token', myGofileToken); 
+                
+                // 確保 Token 確實附加到表單中
+                if (myGofileToken) {
+                    formData.append('token', myGofileToken); 
+                }
 
-                const uploadRes = await fetch(`https://${uploadServer}.gofile.io/contents/uploadfile`, { 
+                // 核心修改：將上傳端點改為穩定版的 /uploadFile
+                const uploadRes = await fetch(`https://${uploadServer}.gofile.io/uploadFile`, { 
                     method: 'POST', 
                     body: formData 
                 });
                 
-                if (!uploadRes.ok) throw new Error(`上傳被拒絕 (Status: ${uploadRes.status})`);
+                // 若伺服器回傳非 200 狀態碼，拋出包含狀態碼的詳細錯誤以便排錯
+                if (!uploadRes.ok) {
+                    throw new Error(`上傳被拒絕 (HTTP 狀態碼: ${uploadRes.status})。請確認 API Token 是否正確。`);
+                }
+                
                 const uploadData = await uploadRes.json();
-                if (uploadData.status !== 'ok') throw new Error(`檔案上傳失敗 (${uploadData.status})`);
+                if (uploadData.status !== 'ok') {
+                    throw new Error(`檔案上傳失敗 (${uploadData.status})`);
+                }
                 
-                // 串接各檔案的單獨下載網址，方便轉發
                 fileLinksList += `📌 ${fmt.name} 格式：\n${uploadData.data.downloadPage}\n\n`;
-                
-                // 稍微延遲 1 秒，防 API 速度過快爆量限制
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                // 加入短暫延遲，避免連續發送請求被伺服器限流 (Rate Limit)
+                await new Promise(resolve => setTimeout(resolve, 800)); 
             }
             
-            // --- 動作 3：將產出的四個下載網址整合到文字框內 ---
             let finalOutputText = `【${baseName}】安全路線檔案已成功打包！\n點擊下方專屬網址即可直接下載對應格式：\n\n${fileLinksList}（提示：檔案已安全同步儲存於上傳者的 Gofile 個人雲端帳號中）`;
-            
             urlInput.value = finalOutputText;
-            hintDiv.innerText = `🎉 成功！4個檔案已直接儲存在您個人的 Gofile 根目錄中。`;
+            hintDiv.innerText = `🎉 成功！5 個檔案已直接儲存在您個人的 Gofile 根目錄中。`;
             
         } catch (error) {
             urlInput.value = `[錯誤]：${error.message}`;
-            hintDiv.innerText = "";
+            hintDiv.innerText = "💡 建議：若錯誤為 HTTP 401，請回到第 3 步驟重新複製並貼上完整的 Token；若持續出現伺服器異常，請暫時改用「存入本機」。";
         } finally {
             shareBtn.disabled = false;
-            shareBtn.innerHTML = '<span class="material-symbols-rounded">share</span> 重新產生連結';
-            shareBtn.style.opacity = "1";
+            shareBtn.innerHTML = '<span class="material-symbols-rounded">share</span> 產生分享網址';
         }
     }
 
