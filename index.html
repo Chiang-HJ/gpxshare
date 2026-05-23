@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>GPX 智慧島嶼防小人路線產生器</title>
+    <title>GPX 智慧島嶼收果路線產生器</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,1,0" rel="stylesheet" />
     <style>
@@ -269,7 +269,7 @@
             <label style="font-weight:bold; font-size:0.95rem; margin-bottom:8px; display:flex; align-items:center;">
                 <span class="material-symbols-rounded">label</span> 路線自訂名稱
             </label>
-            <input type="text" id="customFileName" class="input-box" placeholder="例如：防小人作戰路線">
+            <input type="text" id="customFileName" class="input-box" placeholder=" ">
         </div>
     </div>
 
@@ -819,7 +819,7 @@
     }
 
     function getGPXString(format, routeName) {
-        let baseName = routeName || "防小人路線";
+        let baseName = routeName || "收果路線";
         let baseTime = new Date(); 
         let gpxContent = `<?xml version="1.0" encoding="UTF-8"?>\n`;
         gpxContent += `<gpx version="1.1" creator="GPX Smart Island Generator" xmlns="http://www.topografix.com/GPX/1/1">\n`;
@@ -855,7 +855,7 @@
 
     function exportGPX(format) {
         if (generatedPoints.length === 0) return alert("請先生成路線！");
-        let baseName = document.getElementById('customFileName').value.trim() || "防小人路線";
+        let baseName = document.getElementById('customFileName').value.trim() || "收果路線";
         let gpxText = getGPXString(format, baseName);
         let blob = new Blob([gpxText], { type: 'application/gpx+xml' });
         let url = URL.createObjectURL(blob);
@@ -891,7 +891,7 @@
         shareContainer.style.display = 'block';
         urlInput.value = "[系統] 正在連接雲端伺服器...";
 
-        let baseName = document.getElementById('customFileName').value.trim() || "防小人路線";
+        let baseName = document.getElementById('customFileName').value.trim() || "收果路線";
         let uniqueStamp = new Date().getTime();
 
         const formats = [
